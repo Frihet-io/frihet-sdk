@@ -1,0 +1,60 @@
+{
+  "name": "@frihet/sdk",
+  "version": "1.0.0",
+  "description": "Official Frihet SDK — AI-native business management API client",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "frihet",
+    "erp",
+    "invoicing",
+    "api",
+    "sdk",
+    "typescript",
+    "business",
+    "accounting",
+    "ai",
+    "mcp"
+  ],
+  "author": "Frihet <hello@frihet.io> (https://frihet.io)",
+  "license": "MIT",
+  "homepage": "https://docs.frihet.io/desarrolladores/api-rest",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Frihet-io/frihet-sdk.git",
+    "directory": "packages/sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/Frihet-io/frihet-sdk/issues"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

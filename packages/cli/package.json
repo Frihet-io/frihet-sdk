@@ -1,0 +1,46 @@
+{
+  "name": "frihet",
+  "version": "1.0.0",
+  "description": "Frihet CLI — manage your business from the terminal",
+  "type": "module",
+  "bin": {
+    "frihet": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsx src/index.ts"
+  },
+  "keywords": [
+    "frihet",
+    "erp",
+    "invoicing",
+    "cli",
+    "business"
+  ],
+  "author": "Frihet <hello@frihet.io> (https://frihet.io)",
+  "license": "MIT",
+  "homepage": "https://docs.frihet.io/desarrolladores",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Frihet-io/frihet-sdk.git",
+    "directory": "packages/cli"
+  },
+  "dependencies": {
+    "@frihet/sdk": "workspace:*",
+    "commander": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

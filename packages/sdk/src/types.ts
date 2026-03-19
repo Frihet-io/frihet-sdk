@@ -151,6 +151,30 @@ export type CreateClientParams = Pick<Client, 'name'> &
 
 export type UpdateClientParams = Partial<CreateClientParams>;
 
+// -- Vendor --
+
+export interface Vendor {
+  id: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  taxId?: string;
+  website?: string;
+  address?: string | Address;
+  fiscalZone?: 'peninsula' | 'canarias' | 'ceuta_melilla' | 'eu' | 'world';
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface VendorListParams extends ListParams {
+  q?: string;
+}
+
+export type CreateVendorParams = Pick<Vendor, 'name'> &
+  Partial<Pick<Vendor, 'email' | 'phone' | 'taxId' | 'website' | 'address' | 'fiscalZone'>>;
+
+export type UpdateVendorParams = Partial<CreateVendorParams>;
+
 // -- Product --
 
 export interface Product {
@@ -284,6 +308,20 @@ export interface FinancialSummary {
 export interface SummaryParams {
   from?: string;
   to?: string;
+}
+
+// -- Action results --
+
+export interface MarkPaidResult {
+  success?: boolean;
+  message?: string;
+  status: string;
+  paidAt?: string;
+}
+
+export interface SendResult {
+  success: boolean;
+  messageId: string;
 }
 
 // -- Batch --

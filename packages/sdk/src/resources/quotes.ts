@@ -37,7 +37,7 @@ export class Quotes {
     return this._client.getRaw(`/quotes/${enc(id)}/pdf`, opts);
   }
 
-  send(id: string, params: { recipientEmail: string; recipientName?: string; customMessage?: string; locale?: 'es' | 'en' }, opts?: RequestOptions): Promise<{ success: boolean; messageId: string }> {
+  send(id: string, params: { recipientEmail: string; recipientName?: string; customMessage?: string; locale?: 'es' | 'en' }, opts?: RequestOptions): Promise<{ success: boolean; messageId: string; }> {
     return this._client.post(`/quotes/${enc(id)}/send`, params, opts);
   }
 }

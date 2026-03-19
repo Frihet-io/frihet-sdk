@@ -1,7 +1,7 @@
 import type { HttpClient } from '../client.js';
 import type {
   Invoice, CreateInvoiceParams, UpdateInvoiceParams, InvoiceListParams,
-  SendInvoiceParams, Page, BatchResult, RequestOptions,
+  SendInvoiceParams, MarkPaidResult, SendResult, Page, BatchResult, RequestOptions,
 } from '../types.js';
 
 const enc = encodeURIComponent;
@@ -33,11 +33,11 @@ export class Invoices {
     return this._client.getPage('/invoices', { q: query, ...params } as Record<string, string | number | undefined>, opts);
   }
 
-  markPaid(id: string, paidDate?: string, opts?: RequestOptions): Promise<Invoice> {
+  markPaid(id: string, paidDate?: string, opts?: RequestOptions): Promise<MarkPaidResult> {
     return this._client.post(`/invoices/${enc(id)}/paid`, paidDate ? { paidDate } : undefined, opts);
   }
 
-  send(id: string, params: SendInvoiceParams, opts?: RequestOptions): Promise<{ success: boolean; messageId: string }> {
+  send(id: string, params: SendInvoiceParams, opts?: RequestOptions): Promise<SendResult> {
     return this._client.post(`/invoices/${enc(id)}/send`, params, opts);
   }
 

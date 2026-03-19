@@ -138,8 +138,8 @@ const markPaid = new Command('paid')
   .option('--date <date>', 'Payment date (YYYY-MM-DD, defaults to today)')
   .action(async (id: string, opts: { date?: string }) => {
     try {
-      const inv = await client().invoices.markPaid(id, opts.date);
-      success(`Invoice ${bold(inv.documentNumber ?? inv.id)} marked as ${green('paid')}`);
+      const result = await client().invoices.markPaid(id, opts.date);
+      success(`Invoice ${bold(id)} marked as ${green(result.status)} (${result.paidAt ?? 'today'})`);
     } catch (err) {
       error(err instanceof Error ? err.message : String(err));
       process.exit(1);

@@ -1,11 +1,12 @@
 import { Command } from 'commander';
 import { Frihet } from '@frihet/sdk';
 import { getApiKey, getBaseUrl } from '../config.js';
-import { bold, dim, eur, green, red, yellow, error } from '../output.js';
+import { bold, dim, eur, green, red, yellow, error, outputJson, shouldOutputJson } from '../output.js';
 
 export const statusCommand = new Command('status')
   .description('Quick business health check')
   .option('--month <month>', 'Month (YYYY-MM, defaults to current)')
+  .option('--json', 'Output as JSON')
   .action(async (opts: { month?: string }) => {
     try {
       const f = new Frihet({ apiKey: getApiKey(), baseUrl: getBaseUrl() });
@@ -14,6 +15,11 @@ export const statusCommand = new Command('status')
         f.intelligence.context(),
         f.intelligence.monthly(opts.month),
       ]);
+
+      if (shouldOutputJson()) {
+        outputJson({ context: ctx, summary });
+        return;
+      }
 
       const business = ctx.business as Record<string, string> | undefined;
       const plan = ctx.plan as Record<string, string> | undefined;

@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { Frihet } from '@frihet/sdk';
 import { getApiKey, getBaseUrl } from '../config.js';
-import { table, bold, dim, eur, green, yellow, red, success, error } from '../output.js';
+import { table, bold, dim, eur, green, yellow, red, success, error, outputJson, shouldOutputJson } from '../output.js';
 
 function client(): Frihet {
   return new Frihet({ apiKey: getApiKey(), baseUrl: getBaseUrl() });
@@ -26,6 +26,7 @@ const list = new Command('list')
   .option('--from <date>', 'From date (YYYY-MM-DD)')
   .option('--to <date>', 'To date (YYYY-MM-DD)')
   .option('-q, --search <query>', 'Search by client name or document number')
+  .option('--json', 'Output as JSON')
   .action(async (opts) => {
     try {
       const f = client();
@@ -39,6 +40,11 @@ const list = new Command('list')
       const page = opts.search
         ? await f.quotes.search(opts.search, params)
         : await f.quotes.list(params);
+
+      if (shouldOutputJson()) {
+        outputJson(page);
+        return;
+      }
 
       if (page.data.length === 0) {
         console.log(dim('No quotes found.'));
@@ -64,9 +70,16 @@ const list = new Command('list')
 const get = new Command('get')
   .description('Get quote details')
   .argument('<id>', 'Quote ID or document number')
+  .option('--json', 'Output as JSON')
   .action(async (id: string) => {
     try {
       const q = await client().quotes.retrieve(id);
+
+      if (shouldOutputJson()) {
+        outputJson(q);
+        return;
+      }
+
       console.log(bold(q.documentNumber ?? q.id));
       console.log(`Client:      ${q.clientName}`);
       console.log(`Status:      ${statusColor(q.status)}`);
@@ -143,11 +156,11 @@ const update = new Command('update')
   .action(async (id: string, opts) => {
     try {
       const params: Record<string, unknown> = {};
-      if (opts.client) params.clientName = opts.client;
-      if (opts.validUntil) params.validUntil = opts.validUntil;
-      if (opts.tax) params.taxRate = parseFloat(opts.tax);
-      if (opts.notes) params.notes = opts.notes;
-      if (opts.status) params.status = opts.status;
+      if (opts.client !== undefined) params.clientName = opts.client;
+      if (opts.validUntil !== undefined) params.validUntil = opts.validUntil;
+      if (opts.tax !== undefined) params.taxRate = parseFloat(opts.tax);
+      if (opts.notes !== undefined) params.notes = opts.notes;
+      if (opts.status !== undefined) params.status = opts.status;
 
       const q = await client().quotes.update(id, params);
       success(`Quote ${bold(q.documentNumber ?? q.id)} updated`);

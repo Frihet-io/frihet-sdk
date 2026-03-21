@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { Frihet } from '@frihet/sdk';
 import { getApiKey, getBaseUrl } from '../config.js';
-import { table, bold, dim, green, red, yellow, success, error } from '../output.js';
+import { table, bold, dim, green, red, yellow, success, error, outputJson, shouldOutputJson } from '../output.js';
 
 function client(): Frihet {
   return new Frihet({ apiKey: getApiKey(), baseUrl: getBaseUrl() });
@@ -19,9 +19,15 @@ function statusColor(status: string | undefined): string {
 const list = new Command('list')
   .description('List webhooks')
   .option('--limit <n>', 'Max results', '20')
+  .option('--json', 'Output as JSON')
   .action(async (opts) => {
     try {
       const page = await client().webhooks.list({ limit: parseInt(opts.limit) });
+
+      if (shouldOutputJson()) {
+        outputJson(page);
+        return;
+      }
 
       if (page.data.length === 0) {
         console.log(dim('No webhooks found.'));
@@ -48,9 +54,16 @@ const list = new Command('list')
 const get = new Command('get')
   .description('Get webhook details')
   .argument('<id>', 'Webhook ID')
+  .option('--json', 'Output as JSON')
   .action(async (id: string) => {
     try {
       const w = await client().webhooks.retrieve(id);
+
+      if (shouldOutputJson()) {
+        outputJson(w);
+        return;
+      }
+
       console.log(bold(w.name ?? w.id));
       console.log(`ID:     ${dim(w.id)}`);
       console.log(`URL:    ${w.url}`);
@@ -98,11 +111,11 @@ const update = new Command('update')
   .action(async (id: string, opts) => {
     try {
       const params: Record<string, unknown> = {};
-      if (opts.url) params.url = opts.url;
-      if (opts.events) params.events = opts.events;
-      if (opts.name) params.name = opts.name;
-      if (opts.status) params.status = opts.status;
-      if (opts.secret) params.secret = opts.secret;
+      if (opts.url !== undefined) params.url = opts.url;
+      if (opts.events !== undefined) params.events = opts.events;
+      if (opts.name !== undefined) params.name = opts.name;
+      if (opts.status !== undefined) params.status = opts.status;
+      if (opts.secret !== undefined) params.secret = opts.secret;
 
       const w = await client().webhooks.update(id, params);
       success(`Webhook ${bold(w.name ?? w.id.slice(0, 8))} updated`);

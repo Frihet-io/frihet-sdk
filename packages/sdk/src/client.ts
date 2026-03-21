@@ -1,11 +1,13 @@
 import { APIError, AuthenticationError, NotFoundError, RateLimitError, TimeoutError, ValidationError } from './error.js';
 import type { FrihetOptions, Page, RequestOptions } from './types.js';
 
+declare const __SDK_VERSION__: string;
+
 const DEFAULT_BASE_URL = 'https://api.frihet.io/v1';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 3;
 const BASE_RETRY_DELAY_MS = 1000;
-const SDK_VERSION = '1.0.0';
+const SDK_VERSION = typeof __SDK_VERSION__ !== 'undefined' ? __SDK_VERSION__ : '0.0.0-dev';
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
 
 interface ApiErrorBody {
@@ -15,7 +17,7 @@ interface ApiErrorBody {
 }
 
 export class HttpClient {
-  readonly apiKey: string;
+  private readonly apiKey: string;
   readonly baseUrl: string;
   readonly timeout: number;
 
@@ -109,20 +111,30 @@ export class HttpClient {
     const timeoutMs = opts?.timeout ?? this.timeout;
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
+    // If user provides their own signal, forward its abort to our controller
+    if (opts?.signal) {
+      if (opts.signal.aborted) {
+        clearTimeout(timeoutId);
+        controller.abort();
+      } else {
+        opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
+      }
+    }
+
     let response: Response;
     try {
       response = await fetch(url.toString(), {
         method,
         headers,
         body: body ? JSON.stringify(body) : undefined,
-        signal: opts?.signal ?? controller.signal,
+        signal: controller.signal,
       });
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         throw new TimeoutError(timeoutMs);
       }
-      // Network error (DNS, TLS, connection refused) — retry if possible
-      if (retryCount < MAX_RETRIES) {
+      // Network error (DNS, TLS, connection refused) — only retry idempotent GETs
+      if (retryCount < MAX_RETRIES && method === 'GET') {
         const delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, retryCount);
         await new Promise(r => setTimeout(r, delayMs));
         return this.requestRaw(method, path, body, query, opts, retryCount + 1);

@@ -9,9 +9,13 @@ import { vendorsCommand } from './commands/vendors.js';
 import { webhooksCommand } from './commands/webhooks.js';
 import { statusCommand } from './commands/status.js';
 
+declare const __CLI_VERSION__: string;
+
+const CLI_VERSION = typeof __CLI_VERSION__ !== 'undefined' ? __CLI_VERSION__ : '0.0.0-dev';
+
 const program = new Command()
   .name('frihet')
-  .version('1.0.0')
+  .version(CLI_VERSION)
   .description('Frihet CLI — manage your business from the terminal');
 
 program.addCommand(loginCommand);

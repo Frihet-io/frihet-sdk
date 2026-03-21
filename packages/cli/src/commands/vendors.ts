@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { Frihet } from '@frihet/sdk';
 import { getApiKey, getBaseUrl } from '../config.js';
-import { table, bold, dim, success, error } from '../output.js';
+import { table, bold, dim, success, error, outputJson, shouldOutputJson } from '../output.js';
 
 function client(): Frihet {
   return new Frihet({ apiKey: getApiKey(), baseUrl: getBaseUrl() });
@@ -11,6 +11,7 @@ const list = new Command('list')
   .description('List vendors')
   .option('--limit <n>', 'Max results', '20')
   .option('-q, --search <query>', 'Search vendors')
+  .option('--json', 'Output as JSON')
   .action(async (opts) => {
     try {
       const f = client();
@@ -18,6 +19,11 @@ const list = new Command('list')
       const page = opts.search
         ? await f.vendors.search(opts.search, params)
         : await f.vendors.list(params);
+
+      if (shouldOutputJson()) {
+        outputJson(page);
+        return;
+      }
 
       if (page.data.length === 0) {
         console.log(dim('No vendors found.'));
@@ -44,9 +50,16 @@ const list = new Command('list')
 const get = new Command('get')
   .description('Get vendor details')
   .argument('<id>', 'Vendor ID')
+  .option('--json', 'Output as JSON')
   .action(async (id: string) => {
     try {
       const v = await client().vendors.retrieve(id);
+
+      if (shouldOutputJson()) {
+        outputJson(v);
+        return;
+      }
+
       console.log(bold(v.name));
       console.log(`ID:     ${dim(v.id)}`);
       console.log(`Email:  ${v.email ?? dim('--')}`);
@@ -93,10 +106,10 @@ const update = new Command('update')
   .action(async (id: string, opts) => {
     try {
       const params: Record<string, unknown> = {};
-      if (opts.name) params.name = opts.name;
-      if (opts.email) params.email = opts.email;
-      if (opts.phone) params.phone = opts.phone;
-      if (opts.taxId) params.taxId = opts.taxId;
+      if (opts.name !== undefined) params.name = opts.name;
+      if (opts.email !== undefined) params.email = opts.email;
+      if (opts.phone !== undefined) params.phone = opts.phone;
+      if (opts.taxId !== undefined) params.taxId = opts.taxId;
 
       const v = await client().vendors.update(id, params);
       success(`Vendor ${bold(v.name)} updated`);

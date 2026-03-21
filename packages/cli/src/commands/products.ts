@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { Frihet } from '@frihet/sdk';
 import { getApiKey, getBaseUrl } from '../config.js';
-import { table, bold, dim, eur, green, red, success, error } from '../output.js';
+import { table, bold, dim, eur, green, red, success, error, outputJson, shouldOutputJson } from '../output.js';
 
 function client(): Frihet {
   return new Frihet({ apiKey: getApiKey(), baseUrl: getBaseUrl() });
@@ -11,6 +11,7 @@ const list = new Command('list')
   .description('List products')
   .option('--limit <n>', 'Max results', '20')
   .option('-q, --search <query>', 'Search products')
+  .option('--json', 'Output as JSON')
   .action(async (opts) => {
     try {
       const f = client();
@@ -18,6 +19,11 @@ const list = new Command('list')
       const page = opts.search
         ? await f.products.search(opts.search, params)
         : await f.products.list(params);
+
+      if (shouldOutputJson()) {
+        outputJson(page);
+        return;
+      }
 
       if (page.data.length === 0) {
         console.log(dim('No products found.'));
@@ -45,9 +51,16 @@ const list = new Command('list')
 const get = new Command('get')
   .description('Get product details')
   .argument('<id>', 'Product ID')
+  .option('--json', 'Output as JSON')
   .action(async (id: string) => {
     try {
       const p = await client().products.retrieve(id);
+
+      if (shouldOutputJson()) {
+        outputJson(p);
+        return;
+      }
+
       console.log(bold(p.name));
       console.log(`ID:       ${dim(p.id)}`);
       console.log(`Price:    ${eur(p.unitPrice)}`);
@@ -101,12 +114,12 @@ const update = new Command('update')
   .action(async (id: string, opts) => {
     try {
       const params: Record<string, unknown> = {};
-      if (opts.name) params.name = opts.name;
-      if (opts.price) params.unitPrice = parseFloat(opts.price);
-      if (opts.sku) params.sku = opts.sku;
-      if (opts.category) params.category = opts.category;
-      if (opts.desc) params.description = opts.desc;
-      if (opts.tax) params.taxRate = parseFloat(opts.tax);
+      if (opts.name !== undefined) params.name = opts.name;
+      if (opts.price !== undefined) params.unitPrice = parseFloat(opts.price);
+      if (opts.sku !== undefined) params.sku = opts.sku;
+      if (opts.category !== undefined) params.category = opts.category;
+      if (opts.desc !== undefined) params.description = opts.desc;
+      if (opts.tax !== undefined) params.taxRate = parseFloat(opts.tax);
       if (opts.active !== undefined) params.isActive = opts.active === 'true';
 
       const p = await client().products.update(id, params);

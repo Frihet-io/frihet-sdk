@@ -1,19 +1,21 @@
 {
   "name": "frihet",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Frihet CLI — manage your business from the terminal",
   "type": "module",
   "bin": {
     "frihet": "./dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsup",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "prepublishOnly": "pnpm run build"
   },
   "keywords": [
     "frihet",

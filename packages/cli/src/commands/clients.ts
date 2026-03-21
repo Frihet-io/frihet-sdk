@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { Frihet } from '@frihet/sdk';
 import { getApiKey, getBaseUrl } from '../config.js';
-import { table, bold, dim, success, error } from '../output.js';
+import { table, bold, dim, success, error, outputJson, shouldOutputJson } from '../output.js';
 
 function client(): Frihet {
   return new Frihet({ apiKey: getApiKey(), baseUrl: getBaseUrl() });
@@ -11,6 +11,7 @@ const list = new Command('list')
   .description('List clients')
   .option('--limit <n>', 'Max results', '20')
   .option('-q, --search <query>', 'Search clients')
+  .option('--json', 'Output as JSON')
   .action(async (opts) => {
     try {
       const f = client();
@@ -18,6 +19,11 @@ const list = new Command('list')
       const page = opts.search
         ? await f.clients.search(opts.search, params)
         : await f.clients.list(params);
+
+      if (shouldOutputJson()) {
+        outputJson(page);
+        return;
+      }
 
       if (page.data.length === 0) {
         console.log(dim('No clients found.'));

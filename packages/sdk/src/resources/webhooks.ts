@@ -1,6 +1,5 @@
 import type { HttpClient } from '../client.js';
 import type { Webhook, CreateWebhookParams, UpdateWebhookParams, WebhookListParams, Page, RequestOptions } from '../types.js';
-import { createHmac } from 'node:crypto';
 
 const enc = encodeURIComponent;
 
@@ -31,18 +30,17 @@ export class Webhooks {
    * Verify a webhook signature. Use this in your webhook handler to confirm
    * the payload was sent by Frihet.
    *
+   * Uses dynamic import of node:crypto so the SDK can be loaded in non-Node
+   * environments without breaking at import time.
+   *
    * @param payload - Raw request body (string or Buffer)
    * @param signature - Value of the X-Frihet-Signature header
    * @param secret - Your webhook secret
    */
-  static verifySignature(payload: string | Buffer, signature: string, secret: string): boolean {
+  static async verifySignature(payload: string | Buffer, signature: string, secret: string): Promise<boolean> {
+    const { createHmac, timingSafeEqual } = await import('node:crypto');
     const expected = `sha256=${createHmac('sha256', secret).update(payload).digest('hex')}`;
     if (expected.length !== signature.length) return false;
-    // Constant-time comparison
-    let mismatch = 0;
-    for (let i = 0; i < expected.length; i++) {
-      mismatch |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
-    }
-    return mismatch === 0;
+    return timingSafeEqual(Buffer.from(expected, 'utf-8'), Buffer.from(signature, 'utf-8'));
   }
 }

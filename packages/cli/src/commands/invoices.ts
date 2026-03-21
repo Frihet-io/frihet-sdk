@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { Frihet } from '@frihet/sdk';
 import { getApiKey, getBaseUrl } from '../config.js';
-import { table, bold, dim, eur, green, red, yellow, success, error } from '../output.js';
+import { table, bold, dim, eur, green, red, yellow, success, error, outputJson, shouldOutputJson } from '../output.js';
 
 function client(): Frihet {
   return new Frihet({ apiKey: getApiKey(), baseUrl: getBaseUrl() });
@@ -25,6 +25,7 @@ const list = new Command('list')
   .option('--from <date>', 'From date (YYYY-MM-DD)')
   .option('--to <date>', 'To date (YYYY-MM-DD)')
   .option('-q, --search <query>', 'Search by client name or document number')
+  .option('--json', 'Output as JSON')
   .action(async (opts) => {
     try {
       const f = client();
@@ -38,6 +39,11 @@ const list = new Command('list')
       const page = opts.search
         ? await f.invoices.search(opts.search, params)
         : await f.invoices.list(params);
+
+      if (shouldOutputJson()) {
+        outputJson(page);
+        return;
+      }
 
       if (page.data.length === 0) {
         console.log(dim('No invoices found.'));
@@ -63,9 +69,16 @@ const list = new Command('list')
 const get = new Command('get')
   .description('Get invoice details')
   .argument('<id>', 'Invoice ID or document number')
+  .option('--json', 'Output as JSON')
   .action(async (id: string) => {
     try {
       const inv = await client().invoices.retrieve(id);
+
+      if (shouldOutputJson()) {
+        outputJson(inv);
+        return;
+      }
+
       console.log(bold(inv.documentNumber ?? inv.id));
       console.log(`Client:  ${inv.clientName}`);
       console.log(`Status:  ${statusColor(inv.status)}`);
@@ -132,6 +145,46 @@ const create = new Command('create')
     }
   });
 
+const update = new Command('update')
+  .description('Update an invoice')
+  .argument('<id>', 'Invoice ID')
+  .option('--client <name>', 'Client name')
+  .option('--status <status>', 'Status: draft, sent, paid, overdue, cancelled')
+  .option('--due <date>', 'Due date (YYYY-MM-DD)')
+  .option('--notes <text>', 'Invoice notes')
+  .option('--tax <rate>', 'Tax rate')
+  .option('--irpf <rate>', 'IRPF rate')
+  .action(async (id: string, opts) => {
+    try {
+      const params: Record<string, unknown> = {};
+      if (opts.client !== undefined) params.clientName = opts.client;
+      if (opts.status !== undefined) params.status = opts.status;
+      if (opts.due !== undefined) params.dueDate = opts.due;
+      if (opts.notes !== undefined) params.notes = opts.notes;
+      if (opts.tax !== undefined) params.taxRate = parseFloat(opts.tax);
+      if (opts.irpf !== undefined) params.irpfRate = parseFloat(opts.irpf);
+
+      const inv = await client().invoices.update(id, params);
+      success(`Invoice ${bold(inv.documentNumber ?? inv.id)} updated`);
+    } catch (err) {
+      error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
+const del = new Command('delete')
+  .description('Delete an invoice')
+  .argument('<id>', 'Invoice ID')
+  .action(async (id: string) => {
+    try {
+      await client().invoices.del(id);
+      success(`Invoice ${bold(id)} deleted`);
+    } catch (err) {
+      error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
 const markPaid = new Command('paid')
   .description('Mark invoice as paid')
   .argument('<id>', 'Invoice ID')
@@ -164,10 +217,30 @@ const send = new Command('send')
     }
   });
 
+const pdf = new Command('pdf')
+  .description('Download invoice as PDF')
+  .argument('<id>', 'Invoice ID')
+  .option('-o, --output <path>', 'Output file path')
+  .action(async (id: string, opts: { output?: string }) => {
+    try {
+      const { writeFileSync } = await import('node:fs');
+      const buffer = await client().invoices.pdf(id);
+      const outPath = opts.output ?? `invoice-${id}.pdf`;
+      writeFileSync(outPath, Buffer.from(buffer));
+      success(`PDF saved to ${bold(outPath)}`);
+    } catch (err) {
+      error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
 export const invoicesCommand = new Command('invoices')
   .description('Manage invoices')
   .addCommand(list)
   .addCommand(get)
   .addCommand(create)
+  .addCommand(update)
+  .addCommand(del)
   .addCommand(markPaid)
-  .addCommand(send);
+  .addCommand(send)
+  .addCommand(pdf);

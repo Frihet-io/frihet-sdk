@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { HttpClient } from '../client.js';
 import { Invoices } from '../resources/invoices.js';
+import { Webhooks } from '../resources/webhooks.js';
 import { AuthenticationError, NotFoundError, RateLimitError, APIError } from '../error.js';
 
 // --- Mock fetch ---
@@ -231,7 +232,7 @@ describe('Invoices resource (CRUD via mocked fetch)', () => {
       await invoices.retrieve('inv_1');
 
       const [, opts] = mockFetch.mock.calls[0]!;
-      expect(opts.headers['User-Agent']).toMatch(/@frihet\/sdk\/\d+\.\d+\.\d+ \(node\)/);
+      expect(opts.headers['User-Agent']).toMatch(/@frihet\/sdk\/[\d.]+[\w-]* \(node\)/);
     });
 
     it('sends Idempotency-Key when provided', async () => {
@@ -244,5 +245,26 @@ describe('Invoices resource (CRUD via mocked fetch)', () => {
       const [, opts] = mockFetch.mock.calls[0]!;
       expect(opts.headers['Idempotency-Key']).toBe('idem_abc');
     });
+  });
+});
+
+describe('Webhooks.verifySignature', () => {
+  it('returns true for valid signature', async () => {
+    const payload = '{"event":"invoice.created"}';
+    const secret = 'whsec_test123';
+    const crypto = await import('node:crypto');
+    const expected = `sha256=${crypto.createHmac('sha256', secret).update(payload).digest('hex')}`;
+    const result = await Webhooks.verifySignature(payload, expected, secret);
+    expect(result).toBe(true);
+  });
+
+  it('returns false for invalid signature', async () => {
+    const result = await Webhooks.verifySignature('payload', 'sha256=invalid', 'secret');
+    expect(result).toBe(false);
+  });
+
+  it('returns false for signature with wrong length', async () => {
+    const result = await Webhooks.verifySignature('payload', 'short', 'secret');
+    expect(result).toBe(false);
   });
 });

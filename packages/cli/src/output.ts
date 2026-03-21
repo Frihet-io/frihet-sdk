@@ -55,3 +55,11 @@ export function success(msg: string): void {
 export function error(msg: string): void {
   console.error(`${red('Error')} ${msg}`);
 }
+
+export function outputJson(data: unknown): void {
+  console.log(JSON.stringify(data, null, 2));
+}
+
+export function shouldOutputJson(): boolean {
+  return process.argv.includes('--json');
+}

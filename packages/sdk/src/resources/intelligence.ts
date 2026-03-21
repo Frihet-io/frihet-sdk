@@ -12,7 +12,7 @@ export class Intelligence {
   }
 
   summary(params?: SummaryParams, opts?: RequestOptions): Promise<FinancialSummary> {
-    return this._client.get('/summary', params as Record<string, string | number | undefined>, opts);
+    return this._client.get('/summary', params as Record<string, string | number | boolean | undefined>, opts);
   }
 
   monthly(month?: string, opts?: RequestOptions): Promise<MonthlySummary> {

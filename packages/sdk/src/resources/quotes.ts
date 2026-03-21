@@ -10,7 +10,7 @@ export class Quotes {
   constructor(private _client: HttpClient) {}
 
   list(params?: QuoteListParams, opts?: RequestOptions): Promise<Page<Quote>> {
-    return this._client.getPage('/quotes', params as Record<string, string | number | undefined>, opts);
+    return this._client.getPage('/quotes', params as Record<string, string | number | boolean | undefined>, opts);
   }
 
   retrieve(id: string, opts?: RequestOptions): Promise<Quote> {
@@ -30,7 +30,7 @@ export class Quotes {
   }
 
   search(query: string, params?: Omit<QuoteListParams, 'q'>, opts?: RequestOptions): Promise<Page<Quote>> {
-    return this._client.getPage('/quotes', { q: query, ...params } as Record<string, string | number | undefined>, opts);
+    return this._client.getPage('/quotes', { q: query, ...params } as Record<string, string | number | boolean | undefined>, opts);
   }
 
   pdf(id: string, opts?: RequestOptions): Promise<ArrayBuffer> {

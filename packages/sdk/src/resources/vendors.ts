@@ -7,7 +7,7 @@ export class Vendors {
   constructor(private _client: HttpClient) {}
 
   list(params?: VendorListParams, opts?: RequestOptions): Promise<Page<Vendor>> {
-    return this._client.getPage('/vendors', params as Record<string, string | number | undefined>, opts);
+    return this._client.getPage('/vendors', params as Record<string, string | number | boolean | undefined>, opts);
   }
 
   retrieve(id: string, opts?: RequestOptions): Promise<Vendor> {
@@ -27,6 +27,6 @@ export class Vendors {
   }
 
   search(query: string, params?: Omit<VendorListParams, 'q'>, opts?: RequestOptions): Promise<Page<Vendor>> {
-    return this._client.getPage('/vendors', { q: query, ...params } as Record<string, string | number | undefined>, opts);
+    return this._client.getPage('/vendors', { q: query, ...params } as Record<string, string | number | boolean | undefined>, opts);
   }
 }

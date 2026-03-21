@@ -19,6 +19,7 @@ export interface Page<T> {
   total: number;
   limit: number;
   offset: number;
+  nextCursor?: string;
 }
 
 // -- Pagination --
@@ -26,6 +27,8 @@ export interface Page<T> {
 export interface ListParams {
   limit?: number;
   offset?: number;
+  cursor?: string;
+  fields?: string;
 }
 
 export interface DateFilterParams extends ListParams {
@@ -80,6 +83,8 @@ export interface Invoice {
 export interface InvoiceListParams extends DateFilterParams {
   status?: Invoice['status'];
   q?: string;
+  clientId?: string;
+  seriesId?: string;
 }
 
 export type CreateInvoiceParams = Pick<Invoice, 'clientName' | 'items'> &
@@ -116,6 +121,8 @@ export interface Expense {
 
 export interface ExpenseListParams extends DateFilterParams {
   q?: string;
+  vendorId?: string;
+  category?: string;
 }
 
 export type CreateExpenseParams = Pick<Expense, 'description' | 'amount'> &
@@ -144,6 +151,7 @@ export interface Client {
 
 export interface ClientListParams extends ListParams {
   q?: string;
+  stage?: Client['stage'];
 }
 
 export type CreateClientParams = Pick<Client, 'name'> &
@@ -191,6 +199,7 @@ export interface Product {
 
 export interface ProductListParams extends ListParams {
   q?: string;
+  isActive?: boolean;
 }
 
 export type CreateProductParams = Pick<Product, 'name' | 'unitPrice'> &
@@ -218,6 +227,8 @@ export interface Quote {
 export interface QuoteListParams extends DateFilterParams {
   status?: Quote['status'];
   q?: string;
+  clientId?: string;
+  seriesId?: string;
 }
 
 export type CreateQuoteParams = Pick<Quote, 'clientName' | 'items'> &

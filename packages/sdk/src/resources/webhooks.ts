@@ -7,7 +7,7 @@ export class Webhooks {
   constructor(private _client: HttpClient) {}
 
   list(params?: WebhookListParams, opts?: RequestOptions): Promise<Page<Webhook>> {
-    return this._client.getPage('/webhooks', params as Record<string, string | number | undefined>, opts);
+    return this._client.getPage('/webhooks', params as Record<string, string | number | boolean | undefined>, opts);
   }
 
   retrieve(id: string, opts?: RequestOptions): Promise<Webhook> {

@@ -7,7 +7,7 @@ export class Products {
   constructor(private _client: HttpClient) {}
 
   list(params?: ProductListParams, opts?: RequestOptions): Promise<Page<Product>> {
-    return this._client.getPage('/products', params as Record<string, string | number | undefined>, opts);
+    return this._client.getPage('/products', params as Record<string, string | number | boolean | undefined>, opts);
   }
 
   retrieve(id: string, opts?: RequestOptions): Promise<Product> {
@@ -27,6 +27,6 @@ export class Products {
   }
 
   search(query: string, params?: Omit<ProductListParams, 'q'>, opts?: RequestOptions): Promise<Page<Product>> {
-    return this._client.getPage('/products', { q: query, ...params } as Record<string, string | number | undefined>, opts);
+    return this._client.getPage('/products', { q: query, ...params } as Record<string, string | number | boolean | undefined>, opts);
   }
 }

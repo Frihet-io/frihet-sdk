@@ -10,7 +10,7 @@ export class Invoices {
   constructor(private _client: HttpClient) {}
 
   list(params?: InvoiceListParams, opts?: RequestOptions): Promise<Page<Invoice>> {
-    return this._client.getPage('/invoices', params as Record<string, string | number | undefined>, opts);
+    return this._client.getPage('/invoices', params as Record<string, string | number | boolean | undefined>, opts);
   }
 
   retrieve(id: string, opts?: RequestOptions): Promise<Invoice> {
@@ -30,7 +30,7 @@ export class Invoices {
   }
 
   search(query: string, params?: Omit<InvoiceListParams, 'q'>, opts?: RequestOptions): Promise<Page<Invoice>> {
-    return this._client.getPage('/invoices', { q: query, ...params } as Record<string, string | number | undefined>, opts);
+    return this._client.getPage('/invoices', { q: query, ...params } as Record<string, string | number | boolean | undefined>, opts);
   }
 
   markPaid(id: string, paidDate?: string, opts?: RequestOptions): Promise<MarkPaidResult> {

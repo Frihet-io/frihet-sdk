@@ -39,7 +39,7 @@ export class HttpClient {
     };
   }
 
-  async get<T>(path: string, query?: Record<string, string | number | undefined>, opts?: RequestOptions): Promise<T> {
+  async get<T>(path: string, query?: Record<string, string | number | boolean | undefined>, opts?: RequestOptions): Promise<T> {
     return this.request('GET', path, undefined, query, opts);
   }
 
@@ -55,7 +55,7 @@ export class HttpClient {
     return this.request('DELETE', path, undefined, undefined, opts);
   }
 
-  async getPage<T>(path: string, query?: Record<string, string | number | undefined>, opts?: RequestOptions): Promise<Page<T>> {
+  async getPage<T>(path: string, query?: Record<string, string | number | boolean | undefined>, opts?: RequestOptions): Promise<Page<T>> {
     const raw = await this.requestRaw('GET', path, undefined, query, opts);
     const body = await raw.json();
     const page = this.extractPageFromEnvelope<T>(body);
@@ -74,7 +74,7 @@ export class HttpClient {
     method: string,
     path: string,
     body?: unknown,
-    query?: Record<string, string | number | undefined>,
+    query?: Record<string, string | number | boolean | undefined>,
     opts?: RequestOptions,
   ): Promise<T> {
     const response = await this.requestRaw(method, path, body, query, opts);
@@ -91,7 +91,7 @@ export class HttpClient {
     method: string,
     path: string,
     body?: unknown,
-    query?: Record<string, string | number | undefined>,
+    query?: Record<string, string | number | boolean | undefined>,
     opts?: RequestOptions,
     retryCount = 0,
   ): Promise<Response> {
@@ -208,7 +208,13 @@ export class HttpClient {
 
     // Direct paginated shape
     if (Array.isArray(obj.data) && 'total' in obj) {
-      return { data: obj.data as T[], total: obj.total as number, limit: obj.limit as number, offset: obj.offset as number };
+      return {
+        data: obj.data as T[],
+        total: obj.total as number,
+        limit: obj.limit as number,
+        offset: obj.offset as number,
+        ...(obj.nextCursor ? { nextCursor: obj.nextCursor as string } : {}),
+      };
     }
     return null;
   }

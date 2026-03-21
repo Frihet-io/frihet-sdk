@@ -10,7 +10,7 @@ export class Expenses {
   constructor(private _client: HttpClient) {}
 
   list(params?: ExpenseListParams, opts?: RequestOptions): Promise<Page<Expense>> {
-    return this._client.getPage('/expenses', params as Record<string, string | number | undefined>, opts);
+    return this._client.getPage('/expenses', params as Record<string, string | number | boolean | undefined>, opts);
   }
 
   retrieve(id: string, opts?: RequestOptions): Promise<Expense> {
@@ -30,7 +30,7 @@ export class Expenses {
   }
 
   search(query: string, params?: Omit<ExpenseListParams, 'q'>, opts?: RequestOptions): Promise<Page<Expense>> {
-    return this._client.getPage('/expenses', { q: query, ...params } as Record<string, string | number | undefined>, opts);
+    return this._client.getPage('/expenses', { q: query, ...params } as Record<string, string | number | boolean | undefined>, opts);
   }
 
   createBatch(items: CreateExpenseParams[], opts?: RequestOptions): Promise<BatchResult<Expense>> {

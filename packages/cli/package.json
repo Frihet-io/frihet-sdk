@@ -1,6 +1,6 @@
 {
   "name": "frihet",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Frihet CLI — manage your business from the terminal",
   "type": "module",
   "bin": {

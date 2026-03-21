@@ -159,6 +159,61 @@ export type CreateClientParams = Pick<Client, 'name'> &
 
 export type UpdateClientParams = Partial<CreateClientParams>;
 
+// -- CRM: Client Contacts --
+
+export interface ClientContact {
+  id: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  role?: string;
+  isPrimary?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type CreateContactParams = Pick<ClientContact, 'name'> &
+  Partial<Pick<ClientContact, 'email' | 'phone' | 'role' | 'isPrimary'>>;
+
+export type UpdateContactParams = Partial<CreateContactParams>;
+
+// -- CRM: Client Activities --
+
+export type ActivityType =
+  | 'call' | 'email' | 'meeting' | 'note_added' | 'task'
+  | 'invoice_created' | 'invoice_sent' | 'invoice_paid' | 'invoice_overdue'
+  | 'quote_created' | 'quote_accepted' | 'quote_rejected'
+  | 'expense_logged';
+
+export interface ClientActivity {
+  id: string;
+  type: ActivityType;
+  title: string;
+  description?: string;
+  timestamp: string;
+  metadata?: Record<string, string>;
+  createdBy?: 'system' | 'user';
+  createdAt?: string;
+}
+
+export type CreateActivityParams = Pick<ClientActivity, 'title'> & {
+  type: 'call' | 'email' | 'meeting' | 'task';
+  description?: string;
+  metadata?: Record<string, string>;
+};
+
+// -- CRM: Client Notes --
+
+export interface ClientNote {
+  id: string;
+  content: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type CreateNoteParams = Pick<ClientNote, 'content'>;
+export type UpdateNoteParams = Partial<CreateNoteParams>;
+
 // -- Vendor --
 
 export interface Vendor {

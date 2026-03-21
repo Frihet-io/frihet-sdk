@@ -64,7 +64,7 @@ export interface Invoice {
   items: LineItem[];
   issueDate?: string;
   dueDate?: string;
-  status?: 'draft' | 'sent' | 'paid' | 'overdue' | 'cancelled';
+  status?: 'draft' | 'sent' | 'paid' | 'partial' | 'overdue' | 'cancelled';
   notes?: string;
   taxRate?: number;
   irpfRate?: number;
@@ -159,9 +159,7 @@ export interface Vendor {
   email?: string;
   phone?: string;
   taxId?: string;
-  website?: string;
   address?: string | Address;
-  fiscalZone?: 'peninsula' | 'canarias' | 'ceuta_melilla' | 'eu' | 'world';
   createdAt?: string;
   updatedAt?: string;
 }
@@ -171,7 +169,7 @@ export interface VendorListParams extends ListParams {
 }
 
 export type CreateVendorParams = Pick<Vendor, 'name'> &
-  Partial<Pick<Vendor, 'email' | 'phone' | 'taxId' | 'website' | 'address' | 'fiscalZone'>>;
+  Partial<Pick<Vendor, 'email' | 'phone' | 'taxId' | 'address'>>;
 
 export type UpdateVendorParams = Partial<CreateVendorParams>;
 

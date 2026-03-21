@@ -59,7 +59,7 @@ const q1 = await frihet.intelligence.quarterly('2026-Q1');
 | `frihet.clients` | CRM pipeline stages, fiscal zones, tax IDs |
 | `frihet.vendors` | supplier management, search |
 | `frihet.products` | catalog with SKU, tax rates |
-| `frihet.quotes` | create, send, pdf, convert |
+| `frihet.quotes` | create, send, pdf |
 | `frihet.webhooks` | CRUD + HMAC signature verification |
 | `frihet.intelligence` | business context, monthly P&L, quarterly taxes |
 

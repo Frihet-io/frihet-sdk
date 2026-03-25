@@ -196,7 +196,7 @@ graph LR
 
 | Package | Description |
 |---------|-------------|
-| [`@frihet/mcp-server`](https://github.com/Frihet-io/frihet-mcp) | MCP server for AI agents (35 tools, 8 resources, 7 prompts) |
+| [`@frihet/mcp-server`](https://github.com/Frihet-io/frihet-mcp) | MCP server for AI agents (52 tools, 11 resources, 10 prompts) |
 | [REST API](https://docs.frihet.io/desarrolladores/api-rest) | OpenAPI 3.1 spec at `api.frihet.io/v1/openapi.json` |
 | [Webhooks](https://docs.frihet.io/desarrolladores/webhooks) | Real-time event notifications with HMAC-SHA256 |
 

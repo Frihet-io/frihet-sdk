@@ -20,7 +20,8 @@
   },
   "files": [
     "dist",
-    "LICENSE"
+    "LICENSE",
+    "README.md"
   ],
   "scripts": {
     "build": "tsup",
@@ -39,11 +40,26 @@
     "business",
     "accounting",
     "ai",
-    "mcp"
+    "mcp",
+    "node",
+    "rest-client",
+    "api-client",
+    "webhook",
+    "small-business",
+    "freelancer",
+    "tax",
+    "billing",
+    "invoice",
+    "expense",
+    "crm",
+    "erp-client",
+    "business-automation",
+    "saas",
+    "finance"
   ],
   "author": "Frihet <hello@frihet.io> (https://frihet.io)",
   "license": "MIT",
-  "homepage": "https://docs.frihet.io/desarrolladores/api-rest",
+  "homepage": "https://docs.frihet.io/desarrolladores/sdk-cli",
   "repository": {
     "type": "git",
     "url": "https://github.com/Frihet-io/frihet-sdk.git",

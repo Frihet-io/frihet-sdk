@@ -45,3 +45,52 @@ export { Webhooks } from './resources/webhooks.js';
 export { Intelligence } from './resources/intelligence.js';
 export { FrihetError, APIError, AuthenticationError, NotFoundError, ValidationError, RateLimitError, TimeoutError } from './error.js';
 export type * from './types.js';
+
+// -- D4-C: HR + Banking + Period close + Webhook event taxonomy (forward types) --
+export type {
+  LeaveType,
+  LeaveStatus,
+  LeaveRequest,
+  LeaveEntitlement,
+  CreateLeaveRequestParams,
+  LeaveListParams,
+  MoodValue,
+  DeviceType,
+  BreakType,
+  BreakEntry,
+  AttendanceEntry,
+  PayrollExportFormat,
+  PayrollProfile,
+} from './types/hr.js';
+
+export type {
+  BankTransaction,
+  BankExceptionStatus,
+  BankException,
+  BankRuleConditionField,
+  BankRuleConditionOperator,
+  BankRuleCondition,
+  BankRuleActionType,
+  BankRuleActionConfig,
+  BankRule,
+  CreateBankRuleParams,
+  BankRuleSimulateResult,
+} from './types/banking.js';
+
+export type {
+  PeriodCloseStatus,
+  PeriodGranularity,
+  PeriodClose,
+} from './types/period.js';
+
+export type {
+  WebhookEventCategory,
+  WebhookEventName,
+  WebhookSignaturePayload,
+} from './types/webhookEvents.js';
+
+// -- D4-C: helpers --
+export { createLeaveRequest, approveLeave, rejectLeave } from './api/leaves.js';
+export { bankRuleSimulate } from './api/banking.js';
+export { periodCloseStatus } from './api/period.js';
+export { webhookSignatureVerify } from './api/webhookSignature.js';

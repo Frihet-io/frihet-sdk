@@ -7,6 +7,7 @@ import { Quotes } from './resources/quotes.js';
 import { Vendors } from './resources/vendors.js';
 import { Webhooks } from './resources/webhooks.js';
 import { Intelligence } from './resources/intelligence.js';
+import { Stays } from './resources/stay.js';
 import type { FrihetOptions } from './types.js';
 
 export class Frihet {
@@ -18,6 +19,8 @@ export class Frihet {
   readonly quotes: Quotes;
   readonly webhooks: Webhooks;
   readonly intelligence: Intelligence;
+  /** Hospitality / short-term rental management (Phase 4 Frihet Stay app). */
+  readonly stay: Stays;
 
   constructor(opts: FrihetOptions) {
     const client = new HttpClient(opts);
@@ -29,6 +32,7 @@ export class Frihet {
     this.quotes = new Quotes(client);
     this.webhooks = new Webhooks(client);
     this.intelligence = new Intelligence(client);
+    this.stay = new Stays(client);
   }
 }
 
@@ -43,6 +47,7 @@ export { Quotes } from './resources/quotes.js';
 export { Vendors } from './resources/vendors.js';
 export { Webhooks } from './resources/webhooks.js';
 export { Intelligence } from './resources/intelligence.js';
+export { Stays } from './resources/stay.js';
 export { FrihetError, APIError, AuthenticationError, NotFoundError, ValidationError, RateLimitError, TimeoutError } from './error.js';
 export type * from './types.js';
 

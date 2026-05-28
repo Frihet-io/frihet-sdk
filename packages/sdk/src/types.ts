@@ -388,6 +388,212 @@ export interface SendResult {
   messageId: string;
 }
 
+// ---------------------------------------------------------------------------
+// -- Stay (Hospitality) — Phase 4 app-kit G6 scaffold
+// ---------------------------------------------------------------------------
+
+export type StayPropertyType = 'apartment' | 'house' | 'room' | 'villa' | 'hotel_room' | 'hostel_bed';
+export type StayReservationStatus = 'pending' | 'confirmed' | 'checked_in' | 'checked_out' | 'cancelled' | 'no_show';
+export type StayComplianceReportType = 'ses' | 'alloggiati' | 'mossos' | 'ertzaintza' | 'policía_nacional' | 'custom';
+export type StaySettlementStatus = 'draft' | 'confirmed' | 'paid' | 'disputed';
+export type StayCleaningTaskStatus = 'pending' | 'in_progress' | 'done' | 'skipped';
+
+// -- Stay (top-level domain entity) --
+
+export interface Stay {
+  id: string;
+  name: string;
+  description?: string;
+  status?: 'active' | 'inactive' | 'archived';
+  workspaceUid: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface StayListParams extends ListParams {
+  q?: string;
+  status?: Stay['status'];
+}
+
+export type CreateStayParams = Pick<Stay, 'name'> &
+  Partial<Pick<Stay, 'description' | 'status'>>;
+
+export type UpdateStayParams = Partial<CreateStayParams>;
+
+// -- StayProperty --
+
+export interface StayProperty {
+  id: string;
+  stayId?: string;
+  name: string;
+  type: StayPropertyType;
+  address?: string | Address;
+  maxGuests?: number;
+  bedrooms?: number;
+  bathrooms?: number;
+  checkInTime?: string;
+  checkOutTime?: string;
+  licenseNumber?: string;
+  taxRate?: number;
+  isActive?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface StayPropertyListParams extends ListParams {
+  q?: string;
+  type?: StayPropertyType;
+  isActive?: boolean;
+}
+
+export type CreateStayPropertyParams = Pick<StayProperty, 'name' | 'type'> &
+  Partial<Pick<StayProperty, 'stayId' | 'address' | 'maxGuests' | 'bedrooms' | 'bathrooms' | 'checkInTime' | 'checkOutTime' | 'licenseNumber' | 'taxRate' | 'isActive'>>;
+
+export type UpdateStayPropertyParams = Partial<CreateStayPropertyParams>;
+
+// -- StayReservation --
+
+export interface StayReservation {
+  id: string;
+  propertyId: string;
+  guestName: string;
+  guestEmail?: string;
+  guestPhone?: string;
+  guestIdNumber?: string;
+  checkIn: string;
+  checkOut: string;
+  adults: number;
+  children?: number;
+  status: StayReservationStatus;
+  totalAmount?: number;
+  paidAmount?: number;
+  channel?: string;
+  channelBookingRef?: string;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface StayReservationListParams extends DateFilterParams {
+  q?: string;
+  propertyId?: string;
+  status?: StayReservationStatus;
+  channel?: string;
+}
+
+export type CreateStayReservationParams = Pick<StayReservation, 'propertyId' | 'guestName' | 'checkIn' | 'checkOut' | 'adults'> &
+  Partial<Pick<StayReservation, 'guestEmail' | 'guestPhone' | 'guestIdNumber' | 'children' | 'status' | 'totalAmount' | 'paidAmount' | 'channel' | 'channelBookingRef' | 'notes'>>;
+
+export type UpdateStayReservationParams = Partial<CreateStayReservationParams>;
+
+// -- StayExpense (hospitality-specific expenses) --
+
+export interface StayExpense {
+  id: string;
+  propertyId?: string;
+  reservationId?: string;
+  description: string;
+  amount: number;
+  category?: string;
+  date?: string;
+  vendor?: string;
+  taxDeductible?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface StayExpenseListParams extends DateFilterParams {
+  q?: string;
+  propertyId?: string;
+  reservationId?: string;
+  category?: string;
+}
+
+export type CreateStayExpenseParams = Pick<StayExpense, 'description' | 'amount'> &
+  Partial<Pick<StayExpense, 'propertyId' | 'reservationId' | 'category' | 'date' | 'vendor' | 'taxDeductible'>>;
+
+export type UpdateStayExpenseParams = Partial<CreateStayExpenseParams>;
+
+// -- StayCleaningTask --
+
+export interface StayCleaningTask {
+  id: string;
+  propertyId: string;
+  reservationId?: string;
+  scheduledDate: string;
+  status: StayCleaningTaskStatus;
+  assignedTo?: string;
+  notes?: string;
+  completedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface StayCleaningTaskListParams extends DateFilterParams {
+  propertyId?: string;
+  status?: StayCleaningTaskStatus;
+  assignedTo?: string;
+}
+
+export type CreateStayCleaningTaskParams = Pick<StayCleaningTask, 'propertyId' | 'scheduledDate'> &
+  Partial<Pick<StayCleaningTask, 'reservationId' | 'status' | 'assignedTo' | 'notes'>>;
+
+export type UpdateStayCleaningTaskParams = Partial<CreateStayCleaningTaskParams>;
+
+// -- StaySettlement (owner payouts) --
+
+export interface StaySettlement {
+  id: string;
+  propertyId: string;
+  periodFrom: string;
+  periodTo: string;
+  status: StaySettlementStatus;
+  grossRevenue?: number;
+  managementFee?: number;
+  expenses?: number;
+  ownerPayout?: number;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface StaySettlementListParams extends DateFilterParams {
+  propertyId?: string;
+  status?: StaySettlementStatus;
+}
+
+export type CreateStaySettlementParams = Pick<StaySettlement, 'propertyId' | 'periodFrom' | 'periodTo'> &
+  Partial<Pick<StaySettlement, 'status' | 'grossRevenue' | 'managementFee' | 'expenses' | 'ownerPayout' | 'notes'>>;
+
+export type UpdateStaySettlementParams = Partial<CreateStaySettlementParams>;
+
+// -- StayCompliance (SES/Alloggiati/Policía Nacional police reports) --
+
+export interface StayCompliance {
+  id: string;
+  reservationId: string;
+  propertyId: string;
+  reportType: StayComplianceReportType;
+  status: 'pending' | 'submitted' | 'accepted' | 'rejected' | 'error';
+  submittedAt?: string;
+  referenceNumber?: string;
+  errorMessage?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface StayComplianceListParams extends DateFilterParams {
+  reservationId?: string;
+  propertyId?: string;
+  reportType?: StayComplianceReportType;
+  status?: StayCompliance['status'];
+}
+
+export type CreateStayComplianceParams = Pick<StayCompliance, 'reservationId' | 'propertyId' | 'reportType'> &
+  Partial<Pick<StayCompliance, 'status'>>;
+
+export type UpdateStayComplianceParams = Partial<Pick<StayCompliance, 'status' | 'referenceNumber' | 'errorMessage'>>;
+
 // -- Batch --
 
 export interface BatchResultItem<T> {

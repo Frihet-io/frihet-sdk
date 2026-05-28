@@ -84,13 +84,79 @@ try {
 ## Webhook verification
 
 ```typescript
-import { Webhooks } from '@frihet/sdk';
+import { webhookSignatureVerify } from '@frihet/sdk';
 
-const isValid = Webhooks.verifySignature(
+const isValid = webhookSignatureVerify(
   rawBody,
   req.headers['x-frihet-signature'],
   webhookSecret,
 );
+```
+
+Node-only, synchronous. Accepts the canonical Frihet header
+(`timestamp=<unix>, signature=<hex64>`) plus `sha256=<hex64>` and raw hex
+for compatibility. Validates timestamp freshness (default 300 s) and
+uses `crypto.timingSafeEqual` over hex-sanitized buffers — see
+`functions/src/webhookVerification.ts` for the equivalent server impl.
+
+For non-Node runtimes use the async `Webhooks.verifySignature` static
+helper instead.
+
+## HR (leaves + attendance + payroll)
+
+```typescript
+import {
+  createLeaveRequest,
+  approveLeave,
+  rejectLeave,
+  type LeaveType,
+  type LeaveEntitlement,
+  type AttendanceEntry,
+  type PayrollProfile,
+  type PayrollExportFormat,
+} from '@frihet/sdk';
+
+// helpers expect a transport — pass the same client your Frihet instance uses
+const req = await createLeaveRequest(client, {
+  employeeId: 'emp_123',
+  type: 'vacation',
+  startDate: '2026-07-01',
+  endDate: '2026-07-15',
+});
+
+await approveLeave(client, req.id, 'Cobertura confirmada');
+// or: await rejectLeave(client, req.id, 'Coincide con cierre fiscal');
+```
+
+## Banking (exceptions + rules)
+
+```typescript
+import {
+  bankRuleSimulate,
+  type BankException,
+  type BankExceptionStatus,
+  type BankRule,
+  type CreateBankRuleParams,
+} from '@frihet/sdk';
+
+const draft: CreateBankRuleParams = {
+  name: 'AWS hosting',
+  priority: 100,
+  isActive: true,
+  conditions: [{ field: 'counterparty', operator: 'contains', value: 'AMAZON WEB' }],
+  action: 'categorize_expense',
+  actionConfig: { category: 'hosting' },
+};
+const { matched, sample } = await bankRuleSimulate(client, draft);
+```
+
+## Period close
+
+```typescript
+import { periodCloseStatus, type PeriodClose } from '@frihet/sdk';
+
+const current = await periodCloseStatus(client);          // most recent close
+const march = await periodCloseStatus(client, '2026-03'); // specific period
 ```
 
 ## Configuration

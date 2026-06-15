@@ -2,7 +2,7 @@
 
 All notable changes to `@frihet/sdk` will be documented in this file.
 
-## Unreleased
+## 1.1.0 - 2026-06-15
 
 ### Added (D4-C — HR + webhook types)
 

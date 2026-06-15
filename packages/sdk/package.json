@@ -1,6 +1,6 @@
 {
   "name": "@frihet/sdk",
-  "version": "1.0.4",
+  "version": "1.1.0",
   "description": "Official Frihet SDK — AI-native business management API client",
   "type": "module",
   "main": "./dist/index.cjs",

@@ -1,4 +1,4 @@
-import { APIError, AuthenticationError, NotFoundError, RateLimitError, TimeoutError, ValidationError } from './error.js';
+import { APIError, AuthenticationError, ConflictError, NotFoundError, RateLimitError, TeamSeatLimitError, TimeoutError, ValidationError } from './error.js';
 import type { FrihetOptions, Page, RequestOptions } from './types.js';
 
 declare const __SDK_VERSION__: string;
@@ -229,6 +229,16 @@ export class HttpClient {
       case 404: return new NotFoundError(body.message);
       case 400:
       case 422: return new ValidationError(body.message ?? body.error, body.details);
+      case 409: {
+        const msg = body.message ?? body.error;
+        // The team seat-cap rejection is a 409 with a "Team limit reached"
+        // message — surface it as a dedicated typed error so callers can branch
+        // on it (e.g. prompt an upgrade) without string-matching.
+        if (typeof msg === 'string' && /team limit reached/i.test(msg)) {
+          return new TeamSeatLimitError(msg, requestId);
+        }
+        return new ConflictError(msg, requestId);
+      }
       case 429: return new RateLimitError();
       default: return new APIError(status, body.error, body.message ?? body.error, requestId);
     }

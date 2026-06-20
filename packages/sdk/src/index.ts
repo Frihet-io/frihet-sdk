@@ -8,6 +8,10 @@ import { Vendors } from './resources/vendors.js';
 import { Webhooks } from './resources/webhooks.js';
 import { Intelligence } from './resources/intelligence.js';
 import { Stays } from './resources/stay.js';
+import { Deposits } from './resources/deposits.js';
+import { Team } from './resources/team.js';
+import { Gestoria } from './resources/gestoria.js';
+import { Channels } from './resources/channels.js';
 import type { FrihetOptions } from './types.js';
 
 export class Frihet {
@@ -21,6 +25,14 @@ export class Frihet {
   readonly intelligence: Intelligence;
   /** Hospitality / short-term rental management (Phase 4 Frihet Stay app). */
   readonly stay: Stays;
+  /** Customer deposits / down-payments (money movement + apply/refund). */
+  readonly deposits: Deposits;
+  /** Team members, invitations, and role changes (server enforces seat caps). */
+  readonly team: Team;
+  /** Accountant consolidated receivables aging across client workspaces. */
+  readonly gestoria: Gestoria;
+  /** Stay distribution channel feeds (iCal / API OTA bindings) + sync. */
+  readonly channels: Channels;
 
   constructor(opts: FrihetOptions) {
     const client = new HttpClient(opts);
@@ -33,6 +45,10 @@ export class Frihet {
     this.webhooks = new Webhooks(client);
     this.intelligence = new Intelligence(client);
     this.stay = new Stays(client);
+    this.deposits = new Deposits(client);
+    this.team = new Team(client);
+    this.gestoria = new Gestoria(client);
+    this.channels = new Channels(client);
   }
 }
 
@@ -48,7 +64,11 @@ export { Vendors } from './resources/vendors.js';
 export { Webhooks } from './resources/webhooks.js';
 export { Intelligence } from './resources/intelligence.js';
 export { Stays } from './resources/stay.js';
-export { FrihetError, APIError, AuthenticationError, NotFoundError, ValidationError, RateLimitError, TimeoutError } from './error.js';
+export { Deposits } from './resources/deposits.js';
+export { Team } from './resources/team.js';
+export { Gestoria } from './resources/gestoria.js';
+export { Channels } from './resources/channels.js';
+export { FrihetError, APIError, AuthenticationError, NotFoundError, ValidationError, ConflictError, TeamSeatLimitError, RateLimitError, TimeoutError } from './error.js';
 export type * from './types.js';
 
 // -- D4-C: HR + Banking + Period close + Webhook event taxonomy (forward types) --

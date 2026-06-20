@@ -2,6 +2,7 @@ import type { HttpClient } from '../client.js';
 import type {
   Invoice, CreateInvoiceParams, UpdateInvoiceParams, InvoiceListParams,
   SendInvoiceParams, MarkPaidResult, SendResult, Page, BatchResult, RequestOptions,
+  CreateCreditNoteParams, CreditNoteResult, LateFeeParams, LateFeeResult,
 } from '../types.js';
 
 const enc = encodeURIComponent;
@@ -43,6 +44,22 @@ export class Invoices {
 
   pdf(id: string, opts?: RequestOptions): Promise<ArrayBuffer> {
     return this._client.getRaw(`/invoices/${enc(id)}/pdf`, opts);
+  }
+
+  /**
+   * Create a credit note (factura rectificativa) against an issued invoice.
+   * The invoice must NOT be in `draft` or `cancelled` state (409/400 otherwise).
+   */
+  creditNote(id: string, params: CreateCreditNoteParams, opts?: RequestOptions): Promise<CreditNoteResult> {
+    return this._client.post(`/invoices/${enc(id)}/credit-note`, params, opts);
+  }
+
+  /**
+   * Apply a late fee to an overdue (or sent) invoice. Omit `params.amount` to
+   * let the server auto-calculate using the EU Late Payment Directive rate.
+   */
+  lateFee(id: string, params?: LateFeeParams, opts?: RequestOptions): Promise<LateFeeResult> {
+    return this._client.post(`/invoices/${enc(id)}/late-fee`, params, opts);
   }
 
   createBatch(items: CreateInvoiceParams[], opts?: RequestOptions): Promise<BatchResult<Invoice>> {

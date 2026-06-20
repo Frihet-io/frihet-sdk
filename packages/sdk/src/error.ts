@@ -43,6 +43,27 @@ export class ValidationError extends APIError {
   }
 }
 
+export class ConflictError extends APIError {
+  constructor(message = 'Conflict', requestId?: string) {
+    super(409, 'conflict', message, requestId);
+    this.name = 'ConflictError';
+  }
+}
+
+/**
+ * Raised when the server rejects a team invitation or role change because the
+ * workspace plan's seat cap is reached. The server returns HTTP 409 with a
+ * "Team limit reached" message; the SDK surfaces it as this typed subclass so
+ * callers can branch on `instanceof TeamSeatLimitError` (e.g. to prompt an
+ * upgrade) instead of string-matching error messages.
+ */
+export class TeamSeatLimitError extends ConflictError {
+  constructor(message = 'Team seat limit reached', requestId?: string) {
+    super(message, requestId);
+    this.name = 'TeamSeatLimitError';
+  }
+}
+
 export class RateLimitError extends APIError {
   readonly retryAfter?: number;
 

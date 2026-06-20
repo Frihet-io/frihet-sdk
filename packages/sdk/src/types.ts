@@ -607,3 +607,476 @@ export interface BatchResult<T> {
   data: BatchResultItem<T>[];
   summary: { total: number; succeeded: number; failed: number };
 }
+
+// ---------------------------------------------------------------------------
+// -- Invoice credit notes + late fees (Spanish factura rectificativa)
+// ---------------------------------------------------------------------------
+
+/**
+ * Params for creating a credit note (factura rectificativa) against an issued
+ * invoice. The invoice must NOT be in `draft` or `cancelled` state.
+ * Mirrors the `.strict()` Zod schema in publicApi.ts (POST /invoices/:id/credit-note).
+ */
+export interface CreateCreditNoteParams {
+  /** Rectification reason — maps to AEAT rectificativa type codes server-side. */
+  reason: 'refund' | 'discount' | 'error' | 'cancellation' | 'other';
+  /** Optional free-text explanation (max 500 chars). */
+  reasonDescription?: string;
+  /** Full credit (`true`, default) vs partial credit (`false`). */
+  fullCredit?: boolean;
+  /** Issue date (YYYY-MM-DD). Defaults to today server-side. */
+  issueDate?: string;
+}
+
+export interface CreditNoteResult {
+  success: boolean;
+  creditNote: {
+    id: string;
+    documentNumber: string;
+    originalInvoiceId: string;
+    reason: CreateCreditNoteParams['reason'];
+    fullCredit: boolean;
+  };
+}
+
+/**
+ * Params for applying a late fee to an overdue (or sent) invoice. Both fields
+ * are optional — omit `amount` to let the server auto-calculate using the EU
+ * Late Payment Directive default rate (8% annual). Mirrors the `.strict()` Zod
+ * schema in publicApi.ts (POST /invoices/:id/late-fee).
+ */
+export interface LateFeeParams {
+  /** Explicit fee amount. If omitted, auto-calculated. Must be positive. */
+  amount?: number;
+  /** Override the number of days overdue. Must be a positive integer. */
+  daysOverdue?: number;
+}
+
+export interface LateFeeResult {
+  success: boolean;
+  feeAmount: number;
+  invoiceId: string;
+  daysOverdue: number;
+}
+
+// ---------------------------------------------------------------------------
+// -- Expense billable flag
+// ---------------------------------------------------------------------------
+
+/**
+ * Params for marking an expense billable to a client. Mirrors the `.strict()`
+ * Zod schema in publicApi.ts (POST /expenses/:id/billable). `clientId` is
+ * required by the server.
+ */
+export interface MarkExpenseBillableParams {
+  /** Client the expense will be re-billed to. Required (1–128 chars). */
+  clientId: string;
+  /** Optional markup percentage (0–1000). */
+  markup?: number;
+}
+
+// ---------------------------------------------------------------------------
+// -- Channels (Stay distribution channel feeds) — TOP-LEVEL /channels
+// ---------------------------------------------------------------------------
+//
+// Channels are a Stay-module resource routed at the TOP level (/v1/channels,
+// see ALLOWED_RESOURCES in publicApi.ts:226), NOT under /stay. They model an
+// iCal / API feed binding a Stay property to an OTA (Airbnb, Booking, etc.).
+
+/** Feed direction. Mirrors publicApi.ts:616 create-schema enum. */
+export type ChannelType = 'ical_import' | 'ical_export' | 'api';
+
+/**
+ * Channel status. The create-schema enum is `active | paused | error`
+ * (publicApi.ts:618). NOTE: the LIST status-filter set (publicApi.ts:320) is
+ * also `active | paused | error`; the read serializer passes `status` through
+ * verbatim, so these are the only values the server emits.
+ */
+export type ChannelStatus = 'active' | 'paused' | 'error';
+
+/** A channel feed (serialized shape — publicApi.ts:5368). */
+export interface Channel {
+  id: string;
+  propertyId: string;
+  name: string;
+  type: ChannelType;
+  feedUrl: string | null;
+  status: ChannelStatus;
+  /** ISO timestamp of last sync, or null if never synced. */
+  lastSync: string | null;
+  lastSyncEvents: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/**
+ * Create-channel body. Mirrors the `.strict()` Zod schema in publicApi.ts:613.
+ * `propertyId` + `name` are required; `type` defaults to `ical_import` and
+ * `status` to `active` server-side.
+ */
+export interface CreateChannelParams {
+  propertyId: string;
+  name: string;
+  type?: ChannelType;
+  feedUrl?: string;
+  status?: ChannelStatus;
+}
+
+/** Update-channel body — partial of the create shape. */
+export type UpdateChannelParams = Partial<CreateChannelParams>;
+
+export interface ChannelListParams extends ListParams {
+  q?: string;
+  propertyId?: string;
+  status?: ChannelStatus;
+}
+
+/** Result of POST /v1/channels/:id/sync (publicApi.ts:4975). */
+export interface ChannelSyncResult {
+  success: boolean;
+  message: string;
+  channelId: string;
+}
+
+// ---------------------------------------------------------------------------
+// -- Fiscal Modelo 303 / 130 / 390 — READ-ONLY summaries (never filed to AEAT)
+// ---------------------------------------------------------------------------
+//
+// These types mirror functions/src/fiscalModelo303.ts (canonical engine) and
+// the projected views returned by GET /v1/fiscal/modelo/{303,130,390}.
+//
+// READ-ONLY by design: the endpoint aggregates already-stored invoices and
+// expenses and returns the *calculated* periodic VAT/IRPF summary a
+// freelancer/SME would report. It NEVER presents, signs, or transmits anything
+// to AEAT — presenting a Modelo is an irreversible fiscal act kept out of this
+// API. Every payload carries `readonly: true` + a `note` to that effect so a
+// consumer can never mistake it for a filing.
+
+export type FiscalModelo = '303' | '130' | '390';
+
+/** Operations in OTHER taxes (IGIC/IPSI) — NOT part of the 303 self-assessment. */
+export interface FiscalOutOfScope {
+  igic: { base: number; cuota: number };
+  ipsi: { base: number; cuota: number };
+}
+
+/** Modelo 303 result block (IVA self-assessment). */
+export interface Modelo303Result {
+  /** IVA devengado (output VAT) — operaciones interiores sujetas a IVA. */
+  baseImponible: number;
+  cuotaRepercutida: number;
+  /** IVA deducible (input VAT) on deductible IVA expenses. */
+  baseDeducible: number;
+  cuotaDeducible: number;
+  /** resultado = cuotaRepercutida − cuotaDeducible (positive = to pay). */
+  resultado: number;
+  /** Base of exempt operations (reported, zero cuota). */
+  baseExenta: number;
+  /** Base of intra-community / export / reverse-charge (ISP) operations. */
+  baseNoSujetaORC: number;
+  outOfScope: FiscalOutOfScope;
+}
+
+/** Modelo 130 result block (IRPF pago fraccionado, estimación directa). */
+export interface Modelo130Result {
+  ingresos: number;
+  gastos: number;
+  rendimientoNeto: number;
+  /** Pago fraccionado IRPF (20% of net income, simplified). */
+  pagoFraccionado: number;
+  /** IRPF withheld by clients on issued invoices (reduces the amount due). */
+  retencionesSoportadas: number;
+}
+
+/** Modelo 390 result block (annual IVA recap). */
+export interface Modelo390Result {
+  baseImponible: number;
+  cuotaRepercutida: number;
+  baseDeducible: number;
+  cuotaDeducible: number;
+  resultadoAnual: number;
+  baseExenta: number;
+  baseNoSujetaORC: number;
+  outOfScope: FiscalOutOfScope;
+}
+
+/** Aggregate counts shared by every Modelo summary projection. */
+export interface FiscalModeloSummary {
+  totalRevenue: number;
+  totalExpenses: number;
+  invoiceCount: number;
+  expenseCount: number;
+  clientCount: number;
+}
+
+export interface Modelo303Summary {
+  model: '303';
+  period: string;
+  months: string[];
+  modelo303: Modelo303Result;
+  summary: FiscalModeloSummary;
+  /** Always `true`. This payload is a summary, NOT a filed declaration. */
+  readonly: true;
+  /** Human-readable reminder: "Not presented or submitted to AEAT." */
+  note: string;
+}
+
+export interface Modelo130Summary {
+  model: '130';
+  period: string;
+  months: string[];
+  modelo130: Modelo130Result;
+  summary: FiscalModeloSummary;
+  readonly: true;
+  note: string;
+}
+
+export interface Modelo390Summary {
+  model: '390';
+  period: string;
+  months: string[];
+  modelo390: Modelo390Result;
+  summary: FiscalModeloSummary;
+  readonly: true;
+  note: string;
+}
+
+/** `?quarter=YYYY-Q[1-4]` for 303/130. Defaults to the current quarter. */
+export interface FiscalQuarterParams {
+  quarter?: string;
+}
+
+/** `?year=YYYY` for 390. Defaults to the current year. */
+export interface FiscalYearParams {
+  year?: string;
+}
+
+// ---------------------------------------------------------------------------
+// -- Deposits (customer deposits / down-payments — MONEY MOVEMENT)
+// ---------------------------------------------------------------------------
+
+export type DepositStatus = 'active' | 'partially_applied' | 'fully_applied' | 'refunded';
+
+/** A single application of a deposit against an invoice. */
+export interface DepositApplication {
+  invoiceId: string;
+  invoiceNumber: string;
+  amount: number;
+  appliedAt: string;
+}
+
+export interface Deposit {
+  id: string;
+  clientId: string;
+  clientName: string;
+  amount: number;
+  currency: string;
+  description: string;
+  receivedDate: string;
+  paymentMethod?: string;
+  paymentReference?: string;
+  status: DepositStatus;
+  appliedAmount: number;
+  remainingBalance: number;
+  applications: DepositApplication[];
+  refundedAmount?: number;
+  refundedAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface DepositListParams extends DateFilterParams {
+  q?: string;
+  clientId?: string;
+  status?: DepositStatus;
+}
+
+/**
+ * Create-deposit params. Mirrors the `.strict()` Zod schema in publicApi.ts
+ * AND the firestore.rules `create` allowedKeys for /deposits. `status`,
+ * `appliedAmount`, `remainingBalance`, `applications` are set server-side.
+ */
+export interface CreateDepositParams {
+  clientId: string;
+  clientName: string;
+  amount: number;
+  /** ISO 4217 3-letter code. Defaults to 'EUR' server-side. */
+  currency?: string;
+  description: string;
+  /** Date received (YYYY-MM-DD). */
+  receivedDate: string;
+  paymentMethod?: string;
+  paymentReference?: string;
+}
+
+/**
+ * Apply-deposit body. ALL THREE fields are MANDATORY (the server schema is
+ * `.strict()`: invoiceId min1/max128 + invoiceNumber min1/max200 + amount
+ * positive — publicApi.ts:4245). Sending any extra field is rejected with 400.
+ */
+export interface DepositApplyParams {
+  invoiceId: string;
+  invoiceNumber: string;
+  amount: number;
+}
+
+/**
+ * Apply-deposit result (publicApi.ts:4280). NOTE: `appliedAmount` here is the
+ * amount applied in THIS call (not the cumulative `Deposit.appliedAmount`).
+ */
+export interface DepositApplyResult {
+  success: boolean;
+  depositId: string;
+  appliedAmount: number;
+  remainingBalance: number;
+  status: DepositStatus;
+}
+
+/**
+ * Refund-deposit body. Accepts ONLY an optional `amount` (`.strict()` schema —
+ * publicApi.ts:4287). Adding any other field (e.g. `reason`) is rejected with
+ * 400. Omit `amount` to refund the entire remaining balance.
+ */
+export interface DepositRefundParams {
+  amount?: number;
+}
+
+export interface DepositRefundResult {
+  success: boolean;
+  depositId: string;
+  refundedAmount: number;
+  remainingBalance: number;
+}
+
+/** @deprecated Use {@link DepositApplyParams}. */
+export type ApplyDepositParams = DepositApplyParams;
+/** @deprecated Use {@link DepositApplyResult}. */
+export type ApplyDepositResult = DepositApplyResult;
+/** @deprecated Use {@link DepositRefundParams}. */
+export type RefundDepositParams = DepositRefundParams;
+/** @deprecated Use {@link DepositRefundResult}. */
+export type RefundDepositResult = DepositRefundResult;
+
+// ---------------------------------------------------------------------------
+// -- Team (members + invitations + roles). Server enforces plan seat caps.
+// ---------------------------------------------------------------------------
+
+export type TeamRole = 'owner' | 'admin' | 'member' | 'viewer' | 'editor' | 'accountant';
+export type TeamMemberStatus = 'active' | 'pending';
+
+export interface TeamMember {
+  id: string;
+  email: string | null;
+  name: string | null;
+  role: TeamRole;
+  status: TeamMemberStatus;
+  /** Present on active members. */
+  joinedAt?: string | null;
+  /** Present on pending invitations. */
+  invitedAt?: string | null;
+  expiresAt?: string | null;
+}
+
+export interface TeamMemberListParams extends ListParams {
+  role?: TeamRole;
+  status?: TeamMemberStatus;
+}
+
+/**
+ * Result of GET /v1/team/members — active members + pending invitations merged
+ * into one list, paginated server-side (publicApi.ts:2696-2712). The list is a
+ * standard `{ data, total, limit, offset }` envelope, so consumers use
+ * `Page<TeamMember>`; this alias documents that intent.
+ */
+export type ListMembersResult = Page<TeamMember>;
+
+/**
+ * Invite-member body. The `accountant` role is seat-exempt; every other role
+ * consumes a plan seat. Mirrors the `.strict()` Zod schema in publicApi.ts:2718
+ * (email max255, role enum WITHOUT `owner`, name max200 optional).
+ */
+export interface TeamInviteParams {
+  email: string;
+  role: 'admin' | 'member' | 'viewer' | 'editor' | 'accountant';
+  name?: string;
+}
+
+/** @deprecated Use {@link TeamInviteParams}. */
+export type InviteTeamMemberParams = TeamInviteParams;
+
+export interface TeamInviteResult {
+  id: string;
+  email: string;
+  role: TeamRole;
+  name: string | null;
+  status: 'pending';
+  expiresAt: string;
+}
+
+export type SetTeamRole = 'admin' | 'member' | 'viewer' | 'editor' | 'accountant';
+
+export interface SetTeamRoleResult {
+  id: string;
+  role: TeamRole;
+  updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// -- Gestoria (accountant) — consolidated receivables aging across workspaces
+// ---------------------------------------------------------------------------
+//
+// POST /v1/gestoria/aging (publicApi.ts:3397). Read-only multi-workspace
+// receivables aging for external accountants. The server silently rejects
+// workspaces the caller is not a member of (listed in `rejectedWorkspaceIds`)
+// — never returning unauthorised data. Shapes mirror gestoriaAging.ts:40-76.
+
+export interface AgingBuckets {
+  current: number;
+  days1_30: number;
+  days31_60: number;
+  days61_90: number;
+  days90plus: number;
+}
+
+export interface TopDebtor {
+  clientId: string;
+  clientName: string;
+  totalOutstanding: number;
+  daysOldestInvoice: number;
+  invoiceCount: number;
+}
+
+export interface WorkspaceAgingSummary {
+  workspaceId: string;
+  ownerName: string;
+  buckets: AgingBuckets;
+  grandTotal: number;
+  totalOverdue: number;
+  topDebtors: TopDebtor[];
+  asOf: string;
+  /** Most common currency across invoices in this workspace. */
+  currency: string;
+}
+
+export interface ConsolidatedAgingReport {
+  workspaces: WorkspaceAgingSummary[];
+  /** Workspaces the caller is NOT a member of — rejected, no data returned. */
+  rejectedWorkspaceIds: string[];
+  consolidatedBuckets: AgingBuckets;
+  consolidatedTotal: number;
+  consolidatedOverdue: number;
+  asOf: string;
+  generatedAt: string;
+}
+
+/**
+ * Body for POST /v1/gestoria/aging. Mirrors the `.strict()` Zod schema in
+ * publicApi.ts:3403: `workspaceIds` 1–200 ids (each 1–1500 chars), optional
+ * `asOf` (YYYY-MM-DD), optional `bustCache` (honoured only on the callable CF;
+ * the REST path always computes fresh).
+ */
+export interface GestoriaAgingParams {
+  workspaceIds: string[];
+  asOf?: string;
+  bustCache?: boolean;
+}

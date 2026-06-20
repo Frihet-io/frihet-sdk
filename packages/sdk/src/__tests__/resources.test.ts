@@ -4,7 +4,11 @@ import { Invoices } from '../resources/invoices.js';
 import { Quotes } from '../resources/quotes.js';
 import { Clients } from '../resources/clients.js';
 import { Webhooks } from '../resources/webhooks.js';
-import { AuthenticationError, NotFoundError, RateLimitError, APIError } from '../error.js';
+import { Deposits } from '../resources/deposits.js';
+import { Team } from '../resources/team.js';
+import { Gestoria } from '../resources/gestoria.js';
+import { Channels } from '../resources/channels.js';
+import { AuthenticationError, NotFoundError, RateLimitError, APIError, TeamSeatLimitError, ConflictError } from '../error.js';
 
 // --- Mock fetch ---
 
@@ -581,5 +585,260 @@ describe('Webhooks.verifySignature', () => {
   it('returns false for signature with wrong length', async () => {
     const result = await Webhooks.verifySignature('payload', 'short', 'secret');
     expect(result).toBe(false);
+  });
+});
+
+// =============================================================================
+// Platform-depth wave: Deposits / Team / Gestoria / Channels
+// =============================================================================
+
+describe('Deposits resource (mocked fetch)', () => {
+  let client: HttpClient;
+  let deposits: Deposits;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockFetch.mockReset();
+    client = new HttpClient({ apiKey: 'fri_test_123', baseUrl: 'https://test.api.frihet.io/v1' });
+    deposits = new Deposits(client);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('list() sends GET /deposits and returns paginated data', async () => {
+    const payload = { data: [{ id: 'dep_1', clientName: 'Acme', amount: 500 }], total: 1, limit: 20, offset: 0 };
+    mockFetch.mockResolvedValueOnce(jsonResponse(payload));
+
+    const page = await deposits.list({ status: 'active' });
+
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(url).toContain('/deposits');
+    expect(url).toContain('status=active');
+    expect(opts.method).toBe('GET');
+    expect(page.data[0]!.id).toBe('dep_1');
+  });
+
+  it('create() sends POST /deposits with body', async () => {
+    const created = { id: 'dep_new', clientId: 'cli_1', clientName: 'Beta', amount: 300, status: 'active' };
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: created }));
+
+    const result = await deposits.create({
+      clientId: 'cli_1',
+      clientName: 'Beta',
+      amount: 300,
+      description: 'Down payment',
+      receivedDate: '2026-06-01',
+    });
+
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(url).toContain('/deposits');
+    expect(opts.method).toBe('POST');
+    const body = JSON.parse(opts.body);
+    expect(body.amount).toBe(300);
+    expect(result.id).toBe('dep_new');
+  });
+
+  it('apply() sends POST /deposits/:id/apply with the three mandatory fields', async () => {
+    const applyResult = { success: true, depositId: 'dep_1', appliedAmount: 100, remainingBalance: 400, status: 'partially_applied' };
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: applyResult }));
+
+    const result = await deposits.apply('dep_1', { invoiceId: 'inv_9', invoiceNumber: 'F-2026-009', amount: 100 });
+
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(url).toContain('/deposits/dep_1/apply');
+    expect(opts.method).toBe('POST');
+    const body = JSON.parse(opts.body);
+    expect(body.invoiceId).toBe('inv_9');
+    expect(body.invoiceNumber).toBe('F-2026-009');
+    expect(body.amount).toBe(100);
+    expect(result.appliedAmount).toBe(100);
+    expect(result.status).toBe('partially_applied');
+  });
+
+  it('refund() sends POST /deposits/:id/refund and supports an omitted amount', async () => {
+    const refundResult = { success: true, depositId: 'dep_1', refundedAmount: 400, remainingBalance: 0 };
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: refundResult }));
+
+    const result = await deposits.refund('dep_1');
+
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(url).toContain('/deposits/dep_1/refund');
+    expect(opts.method).toBe('POST');
+    expect(result.refundedAmount).toBe(400);
+  });
+});
+
+describe('Team resource (mocked fetch)', () => {
+  let client: HttpClient;
+  let team: Team;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockFetch.mockReset();
+    client = new HttpClient({ apiKey: 'fri_test_123', baseUrl: 'https://test.api.frihet.io/v1' });
+    team = new Team(client);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('listMembers() sends GET /team/members and returns paginated members', async () => {
+    const payload = { data: [{ id: 'tm_1', email: 'a@b.com', role: 'admin', status: 'active' }], total: 1, limit: 50, offset: 0 };
+    mockFetch.mockResolvedValueOnce(jsonResponse(payload));
+
+    const page = await team.listMembers({ status: 'active' });
+
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(url).toContain('/team/members');
+    expect(opts.method).toBe('GET');
+    expect(page.data[0]!.role).toBe('admin');
+  });
+
+  it('invite() sends POST /team/members/invite with body', async () => {
+    const inviteResult = { id: 'inv_1', email: 'new@b.com', role: 'member', name: null, status: 'pending', expiresAt: '2026-06-27' };
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: inviteResult }));
+
+    const result = await team.invite({ email: 'new@b.com', role: 'member' });
+
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(url).toContain('/team/members/invite');
+    expect(opts.method).toBe('POST');
+    const body = JSON.parse(opts.body);
+    expect(body.email).toBe('new@b.com');
+    expect(result.status).toBe('pending');
+  });
+
+  it('invite() maps a "Team limit reached" 409 to TeamSeatLimitError', async () => {
+    mockFetch.mockResolvedValueOnce(errorResponse(409, 'Team limit reached for your plan'));
+
+    await expect(team.invite({ email: 'x@b.com', role: 'member' })).rejects.toBeInstanceOf(TeamSeatLimitError);
+  });
+
+  it('invite() keeps other 409s as ConflictError', async () => {
+    mockFetch.mockResolvedValueOnce(errorResponse(409, 'User is already a team member'));
+
+    await expect(team.invite({ email: 'x@b.com', role: 'member' })).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it('setRole() sends PATCH /team/members/:id/role with the role body', async () => {
+    const roleResult = { id: 'tm_1', role: 'viewer', updatedAt: '2026-06-20' };
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: roleResult }));
+
+    const result = await team.setRole('tm_1', 'viewer');
+
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(url).toContain('/team/members/tm_1/role');
+    expect(opts.method).toBe('PATCH');
+    const body = JSON.parse(opts.body);
+    expect(body.role).toBe('viewer');
+    expect(result.role).toBe('viewer');
+  });
+
+  it('removeMember() sends DELETE /team/members/:id', async () => {
+    mockFetch.mockResolvedValueOnce({ ...jsonResponse({}, 204), json: () => Promise.resolve({}) });
+
+    await team.removeMember('tm_1');
+
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(url).toContain('/team/members/tm_1');
+    expect(opts.method).toBe('DELETE');
+  });
+});
+
+describe('Gestoria resource (mocked fetch)', () => {
+  let client: HttpClient;
+  let gestoria: Gestoria;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockFetch.mockReset();
+    client = new HttpClient({ apiKey: 'fri_test_123', baseUrl: 'https://test.api.frihet.io/v1' });
+    gestoria = new Gestoria(client);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('aging() sends POST /gestoria/aging and unwraps the consolidated report', async () => {
+    const report = {
+      workspaces: [],
+      rejectedWorkspaceIds: ['ws_x'],
+      consolidatedBuckets: { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0 },
+      consolidatedTotal: 0,
+      consolidatedOverdue: 0,
+      asOf: '2026-06-20',
+      generatedAt: '2026-06-20T00:00:00.000Z',
+    };
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: report }));
+
+    const result = await gestoria.aging({ workspaceIds: ['ws_1', 'ws_x'] });
+
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(url).toContain('/gestoria/aging');
+    expect(opts.method).toBe('POST');
+    const body = JSON.parse(opts.body);
+    expect(body.workspaceIds).toEqual(['ws_1', 'ws_x']);
+    expect(result.rejectedWorkspaceIds).toEqual(['ws_x']);
+  });
+});
+
+describe('Channels resource (mocked fetch)', () => {
+  let client: HttpClient;
+  let channels: Channels;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockFetch.mockReset();
+    client = new HttpClient({ apiKey: 'fri_test_123', baseUrl: 'https://test.api.frihet.io/v1' });
+    channels = new Channels(client);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('list() sends GET /channels (top-level, not under /stay)', async () => {
+    const payload = { data: [{ id: 'ch_1', name: 'Airbnb', type: 'ical_import', status: 'active' }], total: 1, limit: 20, offset: 0 };
+    mockFetch.mockResolvedValueOnce(jsonResponse(payload));
+
+    const page = await channels.list({ propertyId: 'prop_1' });
+
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(url).toContain('/channels');
+    expect(url).not.toContain('/stay');
+    expect(url).toContain('propertyId=prop_1');
+    expect(opts.method).toBe('GET');
+    expect(page.data[0]!.type).toBe('ical_import');
+  });
+
+  it('create() sends POST /channels with body', async () => {
+    const created = { id: 'ch_new', propertyId: 'prop_1', name: 'Booking', type: 'ical_import', status: 'active', feedUrl: null, lastSync: null, lastSyncEvents: 0 };
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: created }));
+
+    const result = await channels.create({ propertyId: 'prop_1', name: 'Booking' });
+
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(url).toContain('/channels');
+    expect(opts.method).toBe('POST');
+    const body = JSON.parse(opts.body);
+    expect(body.propertyId).toBe('prop_1');
+    expect(result.id).toBe('ch_new');
+  });
+
+  it('sync() sends POST /channels/:id/sync', async () => {
+    const syncResult = { success: true, message: 'Sync triggered', channelId: 'ch_1' };
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: syncResult }));
+
+    const result = await channels.sync('ch_1');
+
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(url).toContain('/channels/ch_1/sync');
+    expect(opts.method).toBe('POST');
+    expect(result.success).toBe(true);
+    expect(result.channelId).toBe('ch_1');
   });
 });

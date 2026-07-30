@@ -8,12 +8,14 @@ import { Deposits } from '../resources/deposits.js';
 import { Team } from '../resources/team.js';
 import { Gestoria } from '../resources/gestoria.js';
 import { Channels } from '../resources/channels.js';
-import { AuthenticationError, NotFoundError, RateLimitError, APIError, TeamSeatLimitError, ConflictError } from '../error.js';
+import { AuthenticationError, NotFoundError, RateLimitError, TimeoutError, APIError, TeamSeatLimitError, ConflictError } from '../error.js';
 
 // --- Mock fetch ---
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
+
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function jsonResponse(data: unknown, status = 200, headers: Record<string, string> = {}) {
   return {
@@ -169,6 +171,34 @@ describe('Invoices resource (CRUD via mocked fetch)', () => {
       expect(mockFetch).toHaveBeenCalledTimes(4);
     }, 15_000);
 
+    it('cancels all four real 429 response bodies when retries exhaust', async () => {
+      vi.useFakeTimers();
+      const cancelSpies = Array.from({ length: 4 }, () => vi.fn());
+      const responses = cancelSpies.map(cancel => new Response(
+        new ReadableStream({ cancel }),
+        {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': '1',
+          },
+        },
+      ));
+      for (const response of responses) {
+        mockFetch.mockResolvedValueOnce(response);
+      }
+
+      const result = invoices.retrieve('inv_1').catch(error => error);
+      await vi.advanceTimersByTimeAsync(3000);
+
+      await expect(result).resolves.toBeInstanceOf(RateLimitError);
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+      expect(responses.map(response => response.bodyUsed)).toEqual([true, true, true, true]);
+      for (const cancel of cancelSpies) {
+        expect(cancel).toHaveBeenCalledOnce();
+      }
+    });
+
     it('throws APIError on 500 after retries exhaust', async () => {
       mockFetch.mockResolvedValue(errorResponse(500, 'server_error', 'Internal error'));
 
@@ -211,6 +241,227 @@ describe('Invoices resource (CRUD via mocked fetch)', () => {
       await expect(invoices.create({ clientName: '', items: [] })).rejects.toThrow();
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
+
+    it('retries POST network uncertainty with one stable generated key', async () => {
+      const created = { id: 'inv_network_retry', clientName: 'Recovered', items: [], total: 100 };
+      mockFetch
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
+        .mockResolvedValueOnce(jsonResponse({ data: created }));
+
+      const result = await invoices.create({
+        clientName: 'Recovered',
+        items: [{ description: 'Service', quantity: 1, unitPrice: 100 }],
+      });
+
+      expect(result.id).toBe('inv_network_retry');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const keys = mockFetch.mock.calls.map(([, opts]) => opts.headers['Idempotency-Key']);
+      expect(keys[0]).toMatch(UUID_V4_RE);
+      expect(keys[1]).toBe(keys[0]);
+    });
+
+    it('retries POST 5xx with one stable generated key', async () => {
+      const created = { id: 'inv_server_retry', clientName: 'Recovered', items: [], total: 100 };
+      mockFetch
+        .mockResolvedValueOnce(errorResponse(503, 'unavailable', 'Try again'))
+        .mockResolvedValueOnce(jsonResponse({ data: created }));
+
+      await invoices.create({
+        clientName: 'Recovered',
+        items: [{ description: 'Service', quantity: 1, unitPrice: 100 }],
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const keys = mockFetch.mock.calls.map(([, opts]) => opts.headers['Idempotency-Key']);
+      expect(keys[0]).toMatch(UUID_V4_RE);
+      expect(keys[1]).toBe(keys[0]);
+    });
+
+    it('preserves a caller key byte-for-byte across POST retries', async () => {
+      mockFetch
+        .mockResolvedValueOnce(errorResponse(502, 'bad_gateway', 'Try again'))
+        .mockResolvedValueOnce(jsonResponse({ data: { id: 'inv_explicit' } }));
+
+      await invoices.create(
+        { clientName: 'Explicit', items: [{ description: 'x', quantity: 1, unitPrice: 10 }] },
+        { idempotencyKey: 'caller-owned-key' },
+      );
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch.mock.calls[0]![1].headers['Idempotency-Key']).toBe('caller-owned-key');
+      expect(mockFetch.mock.calls[1]![1].headers['Idempotency-Key']).toBe('caller-owned-key');
+    });
+
+    it.each([
+      ['PATCH', () => invoices.update('inv_1', { clientName: 'No retry' }, { idempotencyKey: 'caller-key' })],
+      ['DELETE', () => invoices.del('inv_1', { idempotencyKey: 'caller-key' })],
+    ])('does not retry %s after a 5xx because the API has no idempotency contract for it', async (_method, call) => {
+      mockFetch.mockResolvedValue(errorResponse(503, 'unavailable', 'Try again'));
+
+      await expect(call()).rejects.toThrow(APIError);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['PATCH', () => invoices.update('inv_1', { clientName: 'No retry' }, { idempotencyKey: 'caller-key' })],
+      ['DELETE', () => invoices.del('inv_1', { idempotencyKey: 'caller-key' })],
+    ])('does not retry %s after a network error, even when a key was supplied', async (_method, call) => {
+      mockFetch.mockRejectedValue(new TypeError('fetch failed'));
+
+      await expect(call()).rejects.toThrow('fetch failed');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry an idempotency 409', async () => {
+      mockFetch.mockResolvedValueOnce(errorResponse(409, 'IDEMPOTENCY_REQUEST_IN_PROGRESS', 'Reconcile first'));
+
+      await expect(invoices.create({
+        clientName: 'Conflict',
+        items: [{ description: 'x', quantity: 1, unitPrice: 10 }],
+      })).rejects.toThrow(ConflictError);
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps 429 retry for POST and reuses the key because Frihet rate-limits before handlers', async () => {
+      mockFetch
+        .mockResolvedValueOnce(errorResponse(429, 'rate_limit_exceeded', 'Try again', { 'Retry-After': 'invalid' }))
+        .mockResolvedValueOnce(jsonResponse({ data: { id: 'inv_after_429' } }));
+
+      const startedAt = Date.now();
+      await invoices.create({
+        clientName: 'Rate limited',
+        items: [{ description: 'x', quantity: 1, unitPrice: 10 }],
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1000);
+      const firstKey = mockFetch.mock.calls[0]![1].headers['Idempotency-Key'];
+      expect(firstKey).toMatch(UUID_V4_RE);
+      expect(mockFetch.mock.calls[1]![1].headers['Idempotency-Key']).toBe(firstKey);
+    });
+
+    it('cancels a pending network retry when the caller aborts during backoff', async () => {
+      vi.useFakeTimers();
+      const controller = new AbortController();
+      mockFetch
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
+        .mockResolvedValueOnce(jsonResponse({ data: { id: 'must_not_run' } }));
+
+      const request = invoices.create(
+        { clientName: 'Cancelled', items: [{ description: 'x', quantity: 1, unitPrice: 10 }] },
+        { signal: controller.signal },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+
+      controller.abort();
+
+      await expect(request).rejects.toThrow(TimeoutError);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['', ' ', 'junk', '1s', '1.5', '-1', '1e3', '0x10'])(
+      'uses exponential fallback for malformed Retry-After %j instead of an immediate retry',
+      async (retryAfter) => {
+        vi.useFakeTimers();
+        mockFetch
+          .mockResolvedValueOnce(errorResponse(429, 'rate_limit_exceeded', 'Try again', { 'Retry-After': retryAfter }))
+          .mockResolvedValueOnce(jsonResponse({ data: { id: 'inv_after_delay' } }));
+
+        const request = invoices.create({
+          clientName: 'Delayed',
+          items: [{ description: 'x', quantity: 1, unitPrice: 10 }],
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(999);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1);
+        await request;
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it('does not schedule an unsafe timer for excessive Retry-After', async () => {
+      vi.useFakeTimers();
+      mockFetch.mockResolvedValueOnce(
+        errorResponse(429, 'rate_limit_exceeded', 'Try later', { 'Retry-After': '2147484' }),
+      );
+
+      const request = invoices.create({
+        clientName: 'No overflow',
+        items: [{ description: 'x', quantity: 1, unitPrice: 10 }],
+      });
+
+      await expect(request).rejects.toMatchObject({ name: 'RateLimitError', retryAfter: 2147484 });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('reports malformed Retry-After as undefined after retries exhaust', async () => {
+      vi.useFakeTimers();
+      mockFetch.mockResolvedValue(
+        errorResponse(429, 'rate_limit_exceeded', 'Try later', { 'Retry-After': 'junk' }),
+      );
+
+      const result = invoices.create({
+        clientName: 'Exhausted',
+        items: [{ description: 'x', quantity: 1, unitPrice: 10 }],
+      }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(7000);
+
+      await expect(result).resolves.toMatchObject({ name: 'RateLimitError', retryAfter: undefined });
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+    });
+
+    it('keeps pre-handler 429 retry for PATCH without enabling PATCH 5xx retry', async () => {
+      vi.useFakeTimers();
+      mockFetch
+        .mockResolvedValueOnce(errorResponse(429, 'rate_limit_exceeded', 'Try again', { 'Retry-After': '0' }))
+        .mockResolvedValueOnce(jsonResponse({ data: { id: 'inv_1', clientName: 'Updated' } }));
+
+      const request = invoices.update('inv_1', { clientName: 'Updated' });
+      await vi.advanceTimersByTimeAsync(0);
+      await request;
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('fails a request with an already-aborted caller signal without fetching or retrying', async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(invoices.create(
+        { clientName: 'Cancelled', items: [{ description: 'x', quantity: 1, unitPrice: 10 }] },
+        { signal: controller.signal },
+      )).rejects.toThrow(TimeoutError);
+
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('does not retry when the caller aborts an in-flight POST', async () => {
+      const controller = new AbortController();
+      mockFetch.mockImplementationOnce((_url, init) => new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        }, { once: true });
+      }));
+
+      const request = invoices.create(
+        { clientName: 'Cancelled', items: [{ description: 'x', quantity: 1, unitPrice: 10 }] },
+        { signal: controller.signal },
+      );
+      await Promise.resolve();
+      controller.abort();
+
+      await expect(request).rejects.toThrow(TimeoutError);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
   });
 
   // --- Headers ---
@@ -250,6 +501,107 @@ describe('Invoices resource (CRUD via mocked fetch)', () => {
 
       const [, opts] = mockFetch.mock.calls[0]!;
       expect(opts.headers['Idempotency-Key']).toBe('idem_abc');
+    });
+
+    it('automatically sends a cryptographically generated key on POST', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ data: { id: 'cn_1', status: 'draft' } }, 201));
+
+      await invoices.creditNote('inv_1', { reason: 'error', fullCredit: true });
+
+      const [, opts] = mockFetch.mock.calls[0]!;
+      expect(opts.headers['Idempotency-Key']).toMatch(UUID_V4_RE);
+      expect(opts.headers['Idempotency-Key']).toHaveLength(36);
+    });
+
+    it('generates distinct keys for distinct POST calls', async () => {
+      mockFetch.mockResolvedValue(jsonResponse({ data: { id: 'inv_new' } }, 201));
+
+      await invoices.create({ clientName: 'One', items: [{ description: 'x', quantity: 1, unitPrice: 10 }] });
+      await invoices.create({ clientName: 'Two', items: [{ description: 'y', quantity: 1, unitPrice: 20 }] });
+
+      const firstKey = mockFetch.mock.calls[0]![1].headers['Idempotency-Key'];
+      const secondKey = mockFetch.mock.calls[1]![1].headers['Idempotency-Key'];
+      expect(firstKey).toMatch(UUID_V4_RE);
+      expect(secondKey).toMatch(UUID_V4_RE);
+      expect(secondKey).not.toBe(firstKey);
+    });
+
+    it.each(['', '   '])('treats an empty explicit key %j as absent and generates a safe key', async (idempotencyKey) => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ data: { id: 'inv_new' } }, 201));
+
+      await invoices.create(
+        { clientName: 'Test', items: [{ description: 'x', quantity: 1, unitPrice: 10 }] },
+        { idempotencyKey },
+      );
+
+      const [, opts] = mockFetch.mock.calls[0]!;
+      expect(opts.headers['Idempotency-Key']).toMatch(UUID_V4_RE);
+    });
+
+    it('never sends Idempotency-Key on GET', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ data: { id: 'inv_1' } }));
+
+      await invoices.retrieve('inv_1');
+
+      const [, opts] = mockFetch.mock.calls[0]!;
+      expect(opts.headers['Idempotency-Key']).toBeUndefined();
+    });
+
+    it('uses Web Crypto getRandomValues when randomUUID is unavailable', async () => {
+      const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+      Object.defineProperty(globalThis, 'crypto', {
+        configurable: true,
+        value: {
+          getRandomValues: (bytes: Uint8Array) => {
+            bytes.set(Array.from({ length: 16 }, (_, index) => index + 1));
+            return bytes;
+          },
+        },
+      });
+
+      try {
+        mockFetch.mockResolvedValueOnce(jsonResponse({ data: { id: 'inv_browser' } }, 201));
+        await invoices.create({
+          clientName: 'Browser',
+          items: [{ description: 'x', quantity: 1, unitPrice: 10 }],
+        });
+
+        expect(mockFetch.mock.calls[0]![1].headers['Idempotency-Key']).toMatch(UUID_V4_RE);
+      } finally {
+        if (originalCrypto) Object.defineProperty(globalThis, 'crypto', originalCrypto);
+        else Reflect.deleteProperty(globalThis, 'crypto');
+      }
+    });
+
+    it('falls back to node:crypto when global Web Crypto is unavailable (Node 18 path)', async () => {
+      const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+      Object.defineProperty(globalThis, 'crypto', { configurable: true, value: undefined });
+
+      try {
+        mockFetch.mockResolvedValueOnce(jsonResponse({ data: { id: 'inv_node18' } }, 201));
+        await invoices.create({
+          clientName: 'Node 18',
+          items: [{ description: 'x', quantity: 1, unitPrice: 10 }],
+        });
+
+        expect(mockFetch.mock.calls[0]![1].headers['Idempotency-Key']).toMatch(UUID_V4_RE);
+      } finally {
+        if (originalCrypto) Object.defineProperty(globalThis, 'crypto', originalCrypto);
+        else Reflect.deleteProperty(globalThis, 'crypto');
+      }
+    });
+
+    it('removes the caller abort listener after the request settles', async () => {
+      const controller = new AbortController();
+      const addListener = vi.spyOn(controller.signal, 'addEventListener');
+      const removeListener = vi.spyOn(controller.signal, 'removeEventListener');
+      mockFetch.mockResolvedValueOnce(jsonResponse({ data: { id: 'inv_1' } }));
+
+      await invoices.retrieve('inv_1', { signal: controller.signal });
+
+      const forwardedListener = addListener.mock.calls.find(([type]) => type === 'abort')?.[1];
+      expect(forwardedListener).toBeDefined();
+      expect(removeListener).toHaveBeenCalledWith('abort', forwardedListener);
     });
   });
 });

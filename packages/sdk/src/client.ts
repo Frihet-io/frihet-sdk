@@ -7,8 +7,87 @@ const DEFAULT_BASE_URL = 'https://api.frihet.io/v1';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 3;
 const BASE_RETRY_DELAY_MS = 1000;
+const MAX_AUTOMATIC_RETRY_AFTER_MS = 60_000;
 const SDK_VERSION = typeof __SDK_VERSION__ !== 'undefined' ? __SDK_VERSION__ : '0.0.0-dev';
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
+
+interface RequestState {
+  /** Resolved once per logical request and reused by every retry attempt. */
+  idempotencyKey?: string;
+  signal?: AbortSignal;
+  timeoutMs: number;
+}
+
+function formatUuidV4(bytes: Uint8Array): string {
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
+ * Generate a cryptographically strong, API-safe key (UUID v4, 36 chars).
+ *
+ * Modern browsers and current Node versions expose Web Crypto globally. Node
+ * 18 is still in the SDK support range and may not expose global Web Crypto,
+ * so it falls back to node:crypto. There is deliberately no Math.random
+ * fallback: retry safety must never depend on weak or collision-prone entropy.
+ */
+async function generateIdempotencyKey(): Promise<string> {
+  const webCrypto = globalThis.crypto;
+  if (typeof webCrypto?.randomUUID === 'function') {
+    return webCrypto.randomUUID();
+  }
+  if (typeof webCrypto?.getRandomValues === 'function') {
+    return formatUuidV4(webCrypto.getRandomValues(new Uint8Array(16)));
+  }
+
+  const { randomUUID } = await import('node:crypto');
+  return randomUUID();
+}
+
+function parseRetryAfterSeconds(retryAfter: string | null): number | undefined {
+  const value = retryAfter?.trim();
+  if (!value || !/^\d+$/.test(value)) return undefined;
+  const seconds = Number(value);
+  return Number.isSafeInteger(seconds) ? seconds : undefined;
+}
+
+function retryDelayMs(retryAfter: string | null, retryCount: number): number | null {
+  // Frihet emits Retry-After as integer delta-seconds. Invalid/missing values
+  // use exponential backoff; a valid but excessive value is returned to the
+  // caller instead of scheduling an overflowing or hours-long timer.
+  const seconds = parseRetryAfterSeconds(retryAfter);
+  if (seconds === undefined) return BASE_RETRY_DELAY_MS * Math.pow(2, retryCount);
+  const milliseconds = seconds * 1000;
+  return milliseconds <= MAX_AUTOMATIC_RETRY_AFTER_MS ? milliseconds : null;
+}
+
+function waitBeforeRetry(ms: number, signal: AbortSignal | undefined, timeoutMs: number): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new TimeoutError(timeoutMs));
+
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(new TimeoutError(timeoutMs));
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+async function discardResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Retry safety must not depend on connection-pool cleanup succeeding.
+  }
+}
 
 interface ApiErrorBody {
   error: string;
@@ -93,6 +172,26 @@ export class HttpClient {
     body?: unknown,
     query?: Record<string, string | number | boolean | undefined>,
     opts?: RequestOptions,
+  ): Promise<Response> {
+    const explicitKey = opts?.idempotencyKey;
+    const usableExplicitKey = explicitKey && explicitKey.trim().length > 0
+      ? explicitKey
+      : undefined;
+    const state: RequestState = {
+      idempotencyKey: usableExplicitKey ?? (method === 'POST' ? await generateIdempotencyKey() : undefined),
+      signal: opts?.signal,
+      timeoutMs: opts?.timeout ?? this.timeout,
+    };
+
+    return this.requestAttempt(method, path, body, query, state, 0);
+  }
+
+  private async requestAttempt(
+    method: string,
+    path: string,
+    body: unknown,
+    query: Record<string, string | number | boolean | undefined> | undefined,
+    state: RequestState,
     retryCount = 0,
   ): Promise<Response> {
     const url = new URL(`${this.baseUrl}${path}`);
@@ -103,25 +202,31 @@ export class HttpClient {
     }
 
     const headers = { ...this.defaultHeaders };
-    if (opts?.idempotencyKey) {
-      headers['Idempotency-Key'] = opts.idempotencyKey;
+    if (state.idempotencyKey) {
+      headers['Idempotency-Key'] = state.idempotencyKey;
     }
 
     const controller = new AbortController();
-    const timeoutMs = opts?.timeout ?? this.timeout;
+    const timeoutMs = state.timeoutMs;
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    // If user provides their own signal, forward its abort to our controller
-    if (opts?.signal) {
-      if (opts.signal.aborted) {
+    // If user provides their own signal, forward its abort to our controller.
+    // Capture the signal itself: RequestOptions is caller-owned and mutable.
+    const callerSignal = state.signal;
+    let removeAbortListener: (() => void) | undefined;
+    if (callerSignal) {
+      if (callerSignal.aborted) {
         clearTimeout(timeoutId);
-        controller.abort();
+        throw new TimeoutError(timeoutMs);
       } else {
-        opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
+        const forwardAbort = () => controller.abort();
+        callerSignal.addEventListener('abort', forwardAbort, { once: true });
+        removeAbortListener = () => callerSignal.removeEventListener('abort', forwardAbort);
       }
     }
 
-    let response: Response;
+    let response: Response | undefined;
+    let fetchError: unknown;
     try {
       response = await fetch(url.toString(), {
         method,
@@ -130,40 +235,58 @@ export class HttpClient {
         signal: controller.signal,
       });
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new TimeoutError(timeoutMs);
-      }
-      // Network error (DNS, TLS, connection refused) — only retry idempotent GETs
-      if (retryCount < MAX_RETRIES && method === 'GET') {
-        const delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, retryCount);
-        await new Promise(r => setTimeout(r, delayMs));
-        return this.requestRaw(method, path, body, query, opts, retryCount + 1);
-      }
-      throw err;
+      fetchError = err;
     } finally {
       clearTimeout(timeoutId);
+      removeAbortListener?.();
     }
 
-    // Retryable status codes (429 rate limit + 5xx server errors)
-    if (RETRYABLE_STATUS_CODES.has(response.status) && retryCount < MAX_RETRIES) {
+    if (!response) {
+      if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+        throw new TimeoutError(timeoutMs);
+      }
+      // A POST is retryable only because its one logical request owns one stable
+      // Idempotency-Key. PATCH/DELETE headers are forwarded for compatibility,
+      // but the Frihet API does not protect those methods, so never retry their
+      // uncertain outcomes. Cleanup above happens before backoff, and the wait
+      // itself observes caller cancellation.
+      const canRetryUncertainOutcome = method === 'GET' || (method === 'POST' && Boolean(state.idempotencyKey));
+      if (retryCount < MAX_RETRIES && canRetryUncertainOutcome) {
+        const delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, retryCount);
+        await waitBeforeRetry(delayMs, callerSignal, timeoutMs);
+        return this.requestAttempt(method, path, body, query, state, retryCount + 1);
+      }
+      throw fetchError;
+    }
+
+    // Frihet's 429 is emitted by the API-key rate limiter before path dispatch,
+    // so it is safe to retry for every method: no handler has run. A 5xx is an
+    // uncertain outcome and follows the stricter GET-or-protected-POST rule.
+    const canRetryUncertainOutcome = method === 'GET' || (method === 'POST' && Boolean(state.idempotencyKey));
+    const shouldRetryStatus = response.status === 429 ||
+      (response.status >= 500 && response.status <= 599 && canRetryUncertainOutcome);
+    if (RETRYABLE_STATUS_CODES.has(response.status) && shouldRetryStatus && retryCount < MAX_RETRIES) {
       if (response.status === 429) {
-        const retryAfter = response.headers.get('Retry-After');
-        const delayMs = retryAfter
-          ? parseInt(retryAfter, 10) * 1000
-          : BASE_RETRY_DELAY_MS * Math.pow(2, retryCount);
-        await new Promise(r => setTimeout(r, delayMs));
+        const delayMs = retryDelayMs(response.headers.get('Retry-After'), retryCount);
+        if (delayMs === null) {
+          await discardResponseBody(response);
+          throw new RateLimitError(parseRetryAfterSeconds(response.headers.get('Retry-After')));
+        }
+        await discardResponseBody(response);
+        await waitBeforeRetry(delayMs, callerSignal, timeoutMs);
       } else {
         // 5xx — exponential backoff
         const delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, retryCount);
-        await new Promise(r => setTimeout(r, delayMs));
+        await discardResponseBody(response);
+        await waitBeforeRetry(delayMs, callerSignal, timeoutMs);
       }
-      return this.requestRaw(method, path, body, query, opts, retryCount + 1);
+      return this.requestAttempt(method, path, body, query, state, retryCount + 1);
     }
 
     // Final rate limit error (after retries exhausted)
     if (response.status === 429) {
-      const retryAfter = response.headers.get('Retry-After');
-      throw new RateLimitError(retryAfter ? parseInt(retryAfter, 10) : undefined);
+      await discardResponseBody(response);
+      throw new RateLimitError(parseRetryAfterSeconds(response.headers.get('Retry-After')));
     }
 
     // Error responses

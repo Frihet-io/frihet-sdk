@@ -170,17 +170,30 @@ const frihet = new Frihet({
 
 // Per-request options
 await frihet.invoices.create(data, {
+  // Optional: POST requests generate a UUID v4 automatically when omitted.
+  // Supply your own to coordinate retries across separate process calls.
   idempotencyKey: 'unique-key-123',
   timeout: 60000,
 });
 ```
 
+Every POST receives one cryptographically strong `Idempotency-Key` per logical
+SDK call. The same key is reused across network, `429`, and retryable `5xx`
+attempts; separate calls receive separate keys. Blank explicit keys are treated
+as absent and replaced safely. `PATCH` and `DELETE` are not retried after a
+network error or `5xx`, because the API does not currently protect those
+methods with an idempotency contract.
+
+`429` remains retryable for every method because Frihet applies rate limiting
+before route handlers execute, so a rate-limited request has produced no
+business side effect.
+
 ## Features
 
 - Full TypeScript types with autocompletion
-- Automatic retry on rate limits (429) and server errors (5xx)
+- Automatic retry on rate limits (429), GET failures, and idempotency-protected POST failures
 - Exponential backoff with configurable retries
-- Idempotency key support for safe retries
+- Automatic cryptographic idempotency keys for safe POST retries
 - Dual CJS/ESM output
 - Zero runtime dependencies
 - Request ID tracking on errors

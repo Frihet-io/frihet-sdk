@@ -2,6 +2,21 @@
 
 All notable changes to `@frihet/sdk` will be documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- Generate one cryptographically strong UUID v4 for every POST when the caller
+  does not supply an `Idempotency-Key`, and preserve it across all retry
+  attempts. Credit-note creation and CLI mutations therefore work safely
+  without manual request options.
+- Retry uncertain network/5xx outcomes only for GET and idempotency-protected
+  POST requests. PATCH and DELETE no longer retry 5xx responses without a
+  server-side idempotency contract; pre-handler 429 retries remain enabled.
+- Fall back to `node:crypto` on Node 18 when global Web Crypto is unavailable,
+  handle malformed `Retry-After` values with exponential backoff, and remove
+  forwarded abort listeners after each attempt.
+
 ## 1.1.0 - 2026-06-15
 
 ### Added (D4-C — HR + webhook types)

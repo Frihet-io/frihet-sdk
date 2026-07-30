@@ -8,6 +8,11 @@ export interface FrihetOptions {
 
 export interface RequestOptions {
   timeout?: number;
+  /**
+   * Stable key for a caller-controlled POST retry sequence. POST requests mint
+   * a cryptographically strong UUID v4 automatically when this is omitted or
+   * blank; a non-blank value is forwarded unchanged.
+   */
   idempotencyKey?: string;
   signal?: AbortSignal;
 }

@@ -171,6 +171,34 @@ describe('Invoices resource (CRUD via mocked fetch)', () => {
       expect(mockFetch).toHaveBeenCalledTimes(4);
     }, 15_000);
 
+    it('cancels all four real 429 response bodies when retries exhaust', async () => {
+      vi.useFakeTimers();
+      const cancelSpies = Array.from({ length: 4 }, () => vi.fn());
+      const responses = cancelSpies.map(cancel => new Response(
+        new ReadableStream({ cancel }),
+        {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': '1',
+          },
+        },
+      ));
+      for (const response of responses) {
+        mockFetch.mockResolvedValueOnce(response);
+      }
+
+      const result = invoices.retrieve('inv_1').catch(error => error);
+      await vi.advanceTimersByTimeAsync(3000);
+
+      await expect(result).resolves.toBeInstanceOf(RateLimitError);
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+      expect(responses.map(response => response.bodyUsed)).toEqual([true, true, true, true]);
+      for (const cancel of cancelSpies) {
+        expect(cancel).toHaveBeenCalledOnce();
+      }
+    });
+
     it('throws APIError on 500 after retries exhaust', async () => {
       mockFetch.mockResolvedValue(errorResponse(500, 'server_error', 'Internal error'));
 

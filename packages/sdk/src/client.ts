@@ -285,6 +285,7 @@ export class HttpClient {
 
     // Final rate limit error (after retries exhausted)
     if (response.status === 429) {
+      await discardResponseBody(response);
       throw new RateLimitError(parseRetryAfterSeconds(response.headers.get('Retry-After')));
     }
 

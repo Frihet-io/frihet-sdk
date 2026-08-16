@@ -90,10 +90,19 @@ export class CapabilityUnavailableError extends FrihetError {
   readonly capability: string;
   readonly reason: 'absent' | 'not_implemented';
 
-  constructor(capability: string, reason: 'absent' | 'not_implemented', detail?: string) {
-    const explanation = reason === 'absent'
-      ? 'the Frihet backend has no such route'
-      : 'the Frihet backend registers the route but deliberately does not implement it (501)';
+  constructor(
+    capability: string,
+    reason: 'absent' | 'not_implemented',
+    detail?: string,
+    authority: 'runtime' | 'public_contract' = 'runtime',
+  ) {
+    const explanation = authority === 'public_contract'
+      ? reason === 'absent'
+        ? 'the capability is absent from the intended Frihet public API contract'
+        : 'the intended Frihet public API capability is deliberately not implemented'
+      : reason === 'absent'
+        ? 'the Frihet backend has no such route'
+        : 'the Frihet backend registers the route but deliberately does not implement it (501)';
     super(
       `Capability unavailable: ${capability} — ${explanation}. ` +
       'No request was sent. This is an SDK-side guard, not a server failure.' +

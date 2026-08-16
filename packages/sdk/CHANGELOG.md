@@ -4,6 +4,24 @@ All notable changes to `@frihet/sdk` will be documented in this file.
 
 ## Unreleased
 
+### Changed (Channels SDK-first retirement)
+
+- The legacy top-level Channels read bridge (`list`, `retrieve`, `search`)
+  keeps its exact existing GET paths, query behavior, and method signatures for
+  a temporary compatibility window. These methods are now explicitly
+  `@deprecated`, are not intended for new integrations, and do not claim an
+  equivalent replacement route.
+- The distributed `create`, `update`, `del`, and `sync` method names and
+  signatures remain available for source compatibility but now fail locally
+  with `CapabilityUnavailableError` before any HTTP request. CRUD mutations use
+  `reason: 'absent'` because they are absent from the intended public contract;
+  sync uses `reason: 'not_implemented'` because that public capability is
+  deliberately not implemented.
+- This release has **zero source/API-shape breaking changes**, but it does have
+  an intentional behavior change: legacy Channels mutation methods no longer
+  call the retiring top-level API surface. No package version is changed and no
+  release is published by this pull request.
+
 ### Changed (Stay runtime truth)
 
 - The `Stays` resource now follows the actual Frihet runtime instead of the

@@ -2,6 +2,15 @@
 
 All notable changes to `frihet` (CLI) will be documented in this file.
 
+## 1.2.1 - 2026-08-17
+
+### Changed
+
+- Bump the packaged `@frihet/sdk` dependency to 1.2.1. The SDK release preserves
+  public method names and signatures while correcting Stay runtime truth and
+  retiring legacy Channels mutations locally. There are no CLI command-shape
+  changes in this patch.
+
 ## 1.1.0 - 2026-06-15
 
 ### Changed

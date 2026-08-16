@@ -2,7 +2,7 @@
 
 All notable changes to `@frihet/sdk` will be documented in this file.
 
-## Unreleased
+## 1.2.1 - 2026-08-17
 
 ### Changed (Channels SDK-first retirement)
 
@@ -19,8 +19,7 @@ All notable changes to `@frihet/sdk` will be documented in this file.
   deliberately not implemented.
 - This release has **zero source/API-shape breaking changes**, but it does have
   an intentional behavior change: legacy Channels mutation methods no longer
-  call the retiring top-level API surface. No package version is changed and no
-  release is published by this pull request.
+  call the retiring top-level API surface.
 
 ### Changed (Stay runtime truth)
 

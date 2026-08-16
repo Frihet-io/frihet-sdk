@@ -2,8 +2,10 @@
  * Stay runtime-truth manifest — single source of truth for which Stays
  * methods the Frihet backend actually serves.
  *
- * Verified against the ERP runtime (functions/src/publicApi/families/stay.ts,
- * origin/main). The Stays resource class derives its fail-closed behavior
+ * Verified against the ERP runtime: Frihet-ERP origin/main
+ * 0edc7c73013ea0fd87088b2c216408c1eb5aeb0a, path
+ * functions/src/publicApi/families/stay.ts (verified byte-identical at that
+ * SHA). The Stays resource class derives its fail-closed behavior
  * from this table, and the test suite iterates over it, so regenerating
  * phantom CRUD from an app-kit scaffold without updating this manifest turns
  * the tests red.

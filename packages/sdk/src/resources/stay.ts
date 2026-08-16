@@ -9,9 +9,11 @@
  *
  * All behavior here is derived from ./stay.manifest.ts (the runtime-truth
  * manifest): unavailable methods fail closed with CapabilityUnavailableError
- * BEFORE any HTTP request, and live list methods allowlist outgoing query
- * params against the exact set the runtime accepts. Method names and
- * signatures are unchanged for source compatibility.
+ * BEFORE any HTTP request, and live list methods send only the query params
+ * the runtime accepts — any other defined param (cursor, fields, or an
+ * unknown key) fails locally with CapabilityUnavailableError instead of
+ * being silently dropped. Method names and signatures are unchanged for
+ * source compatibility.
  */
 import type { HttpClient } from '../client.js';
 import { CapabilityUnavailableError, ValidationError } from '../error.js';
@@ -65,11 +67,12 @@ function unavailable<T>(method: string): Promise<T> {
   return Promise.reject(capabilityError(stayManifestEntry(method)));
 }
 
-function unsupportedParam(method: string, param: string): CapabilityUnavailableError {
+function unsupportedParams(method: string, params: string[]): CapabilityUnavailableError {
+  const names = params.map(p => `"${p}"`).join(', ');
   return new CapabilityUnavailableError(
-    `Stays.${method} query param "${param}"`,
+    `Stays.${method} query param${params.length > 1 ? 's' : ''} ${names}`,
     'absent',
-    'The runtime does not support this filter; it is not sent silently.',
+    'The runtime does not support these filters; they are not sent silently.',
   );
 }
 
@@ -82,16 +85,26 @@ function liveEntry(method: string): StayManifestEntry | Promise<never> {
   return entry.status === 'live' ? entry : Promise.reject(capabilityError(entry));
 }
 
-/** Keep only the query params the runtime route actually accepts. */
-function allowlistQuery(entry: StayManifestEntry, params: Record<string, unknown>): Query {
+/**
+ * Split caller params into the query the runtime route actually accepts and
+ * the list of defined-but-unsupported keys. Undefined values are skipped
+ * (never sent, never rejected). Callers MUST fail on a non-empty
+ * `unsupported` list — silently dropping a defined key would send a request
+ * without the requested behavior while returning data as if it were honored.
+ */
+function partitionQuery(entry: StayManifestEntry, params: Record<string, unknown>): { query: Query; unsupported: string[] } {
   const allowed = new Set(entry.queryParams ?? []);
   const query: Query = {};
+  const unsupported: string[] = [];
   for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && allowed.has(key)) {
+    if (value === undefined) continue;
+    if (allowed.has(key)) {
       query[key] = value as string | number | boolean;
+    } else {
+      unsupported.push(key);
     }
   }
-  return query;
+  return { query, unsupported };
 }
 
 export class Stays {
@@ -164,17 +177,22 @@ export class Stays {
   /**
    * List stay properties. LIVE runtime route: GET /stay/properties.
    * Supported filters: q, isActive, limit, offset (allowlisted per the
-   * runtime-truth manifest). `type` has no runtime equivalent: passing a
-   * defined value fails locally with CapabilityUnavailableError.
+   * runtime-truth manifest). Any other defined param (`type`, `cursor`,
+   * `fields`, or an unknown key) fails locally with
+   * CapabilityUnavailableError before any HTTP request.
    */
   listProperties(params?: StayPropertyListParams, opts?: RequestOptions): Promise<Page<StayProperty>> {
     const entry = liveEntry('listProperties');
     if (entry instanceof Promise) return entry;
     const { type, ...rest } = params ?? {};
     if (type !== undefined) {
-      return Promise.reject(unsupportedParam('listProperties', 'type'));
+      return Promise.reject(unsupportedParams('listProperties', ['type']));
     }
-    return this._client.getPage('/stay/properties', allowlistQuery(entry, rest), opts);
+    const { query, unsupported } = partitionQuery(entry, rest);
+    if (unsupported.length > 0) {
+      return Promise.reject(unsupportedParams('listProperties', unsupported));
+    }
+    return this._client.getPage('/stay/properties', query, opts);
   }
 
   /**
@@ -227,18 +245,19 @@ export class Stays {
    * Deprecated aliases `from`/`to` map deterministically to
    * checkInFrom/checkInTo (both filter on the reservation checkIn date);
    * setting both an alias and its canonical param throws ValidationError.
-   * `q` and `channel` have no runtime equivalent: passing a defined value
-   * fails locally with CapabilityUnavailableError.
+   * Any other defined param outside the allowlist (`q`, `channel`, `cursor`,
+   * `fields`, or an unknown key) fails locally with
+   * CapabilityUnavailableError before any HTTP request.
    */
   listReservations(params?: StayReservationListParams, opts?: RequestOptions): Promise<Page<StayReservation>> {
     const entry = liveEntry('listReservations');
     if (entry instanceof Promise) return entry;
     const { q, channel, from, to, ...rest } = params ?? {};
     if (q !== undefined) {
-      return Promise.reject(unsupportedParam('listReservations', 'q'));
+      return Promise.reject(unsupportedParams('listReservations', ['q']));
     }
     if (channel !== undefined) {
-      return Promise.reject(unsupportedParam('listReservations', 'channel'));
+      return Promise.reject(unsupportedParams('listReservations', ['channel']));
     }
     if (from !== undefined) {
       if (rest.checkInFrom !== undefined) {
@@ -256,7 +275,11 @@ export class Stays {
       }
       rest.checkInTo = to;
     }
-    return this._client.getPage('/stay/reservations', allowlistQuery(entry, rest), opts);
+    const { query, unsupported } = partitionQuery(entry, rest);
+    if (unsupported.length > 0) {
+      return Promise.reject(unsupportedParams('listReservations', unsupported));
+    }
+    return this._client.getPage('/stay/reservations', query, opts);
   }
 
   /** Retrieve a stay reservation. LIVE runtime route: GET /stay/reservations/:id. */

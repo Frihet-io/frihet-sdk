@@ -172,7 +172,39 @@ describe('Stays runtime-truth gating (mocked fetch)', () => {
     expect(error).toBeInstanceOf(CapabilityUnavailableError);
     expect(error.reason).toBe('absent');
     expect(error.capability).toContain('"type"');
+    expect(error.message).toMatch(/no request was sent/i);
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['cursor', 'fields'] as const)(
+    'listProperties rejects a defined inherited "%s" param and sends no HTTP request',
+    async (param) => {
+      const error = await stays.listProperties({ [param]: 'x' }).catch(e => e) as CapabilityUnavailableError;
+
+      expect(error).toBeInstanceOf(CapabilityUnavailableError);
+      expect(error.reason).toBe('absent');
+      expect(error.capability).toContain(`"${param}"`);
+      expect(error.message).toMatch(/no request was sent/i);
+      expect(mockFetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it('listProperties rejects an arbitrary unknown defined key and sends no HTTP request', async () => {
+    const error = await stays.listProperties({ q: 'ok', bogusFilter: 'x' } as any)
+      .catch(e => e) as CapabilityUnavailableError;
+
+    expect(error).toBeInstanceOf(CapabilityUnavailableError);
+    expect(error.capability).toContain('"bogusFilter"');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('listProperties skips undefined values without rejecting or sending them', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: [], total: 0, limit: 20, offset: 0 }));
+
+    await stays.listProperties({ q: 'beach', isActive: undefined, cursor: undefined });
+
+    const [url] = mockFetch.mock.calls[0]!;
+    expect(queryParamNames(url)).toEqual(['q']);
   });
 
   // --- LIVE: listReservations ---
@@ -225,9 +257,41 @@ describe('Stays runtime-truth gating (mocked fetch)', () => {
       expect(error).toBeInstanceOf(CapabilityUnavailableError);
       expect(error.reason).toBe('absent');
       expect(error.capability).toContain(`"${param}"`);
+      expect(error.message).toMatch(/no request was sent/i);
       expect(mockFetch).not.toHaveBeenCalled();
     },
   );
+
+  it.each(['cursor', 'fields'] as const)(
+    'listReservations rejects a defined inherited "%s" param and sends no HTTP request',
+    async (param) => {
+      const error = await stays.listReservations({ [param]: 'x' }).catch(e => e) as CapabilityUnavailableError;
+
+      expect(error).toBeInstanceOf(CapabilityUnavailableError);
+      expect(error.reason).toBe('absent');
+      expect(error.capability).toContain(`"${param}"`);
+      expect(error.message).toMatch(/no request was sent/i);
+      expect(mockFetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it('listReservations rejects an arbitrary unknown defined key and sends no HTTP request', async () => {
+    const error = await stays.listReservations({ status: 'confirmed', bogusFilter: 'x' } as any)
+      .catch(e => e) as CapabilityUnavailableError;
+
+    expect(error).toBeInstanceOf(CapabilityUnavailableError);
+    expect(error.capability).toContain('"bogusFilter"');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('listReservations skips undefined values without rejecting or sending them', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: [], total: 0, limit: 20, offset: 0 }));
+
+    await stays.listReservations({ propertyId: 'prop_1', status: undefined, cursor: undefined });
+
+    const [url] = mockFetch.mock.calls[0]!;
+    expect(queryParamNames(url)).toEqual(['propertyId']);
+  });
 
   // --- LIVE: retrieveReservation response contract ---
 

@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm typecheck
+
+      # vitest 4 requires Node 20+, so the full suite runs on 20/22 and the
+      # built bundle is smoke-tested on the oldest supported Node instead.
+      - name: SDK test suite
+        if: matrix.node != 18
+        run: pnpm --filter @frihet/sdk test
+
+      - name: Node 18 runtime smoke (built bundle)
+        if: matrix.node == 18
+        run: node packages/sdk/scripts/smoke-dist.mjs

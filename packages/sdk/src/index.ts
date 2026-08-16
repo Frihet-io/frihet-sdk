@@ -68,7 +68,7 @@ export { Deposits } from './resources/deposits.js';
 export { Team } from './resources/team.js';
 export { Gestoria } from './resources/gestoria.js';
 export { Channels } from './resources/channels.js';
-export { FrihetError, APIError, AuthenticationError, NotFoundError, ValidationError, ConflictError, TeamSeatLimitError, RateLimitError, TimeoutError } from './error.js';
+export { FrihetError, APIError, AuthenticationError, NotFoundError, ValidationError, ConflictError, TeamSeatLimitError, RateLimitError, TimeoutError, CapabilityUnavailableError } from './error.js';
 export type * from './types.js';
 
 // -- D4-C: HR + Banking + Period close + Webhook event taxonomy (forward types) --

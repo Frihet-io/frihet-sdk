@@ -447,6 +447,11 @@ export interface StayProperty {
 
 export interface StayPropertyListParams extends ListParams {
   q?: string;
+  /**
+   * @deprecated No runtime equivalent — GET /stay/properties accepts only
+   * q, isActive, limit, offset. Passing a defined value fails locally with
+   * CapabilityUnavailableError before any HTTP request.
+   */
   type?: StayPropertyType;
   isActive?: boolean;
 }
@@ -480,10 +485,36 @@ export interface StayReservation {
 }
 
 export interface StayReservationListParams extends DateFilterParams {
+  /**
+   * @deprecated No runtime equivalent — GET /stay/reservations accepts only
+   * propertyId, status, checkInFrom, checkInTo, limit, offset. Passing a
+   * defined value fails locally with CapabilityUnavailableError before any
+   * HTTP request.
+   */
   q?: string;
   propertyId?: string;
   status?: StayReservationStatus;
+  /**
+   * @deprecated No runtime equivalent (like `q`). Passing a defined value
+   * fails locally with CapabilityUnavailableError before any HTTP request.
+   */
   channel?: string;
+  /** Filter by reservation checkIn date, from (inclusive lower bound). */
+  checkInFrom?: string;
+  /** Filter by reservation checkIn date, to (inclusive upper bound). */
+  checkInTo?: string;
+  /**
+   * @deprecated Alias for `checkInFrom` (both filter the reservation checkIn
+   * date). Mapped deterministically by the SDK; passing both `from` and
+   * `checkInFrom` throws ValidationError.
+   */
+  from?: string;
+  /**
+   * @deprecated Alias for `checkInTo` (both filter the reservation checkIn
+   * date). Mapped deterministically by the SDK; passing both `to` and
+   * `checkInTo` throws ValidationError.
+   */
+  to?: string;
 }
 
 export type CreateStayReservationParams = Pick<StayReservation, 'propertyId' | 'guestName' | 'checkIn' | 'checkOut' | 'adults'> &

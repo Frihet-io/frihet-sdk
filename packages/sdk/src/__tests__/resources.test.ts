@@ -1167,30 +1167,15 @@ describe('Channels resource (mocked fetch)', () => {
     expect(page.data[0]!.type).toBe('ical_import');
   });
 
-  it('create() sends POST /channels with body', async () => {
-    const created = { id: 'ch_new', propertyId: 'prop_1', name: 'Booking', type: 'ical_import', status: 'active', feedUrl: null, lastSync: null, lastSyncEvents: 0 };
-    mockFetch.mockResolvedValueOnce(jsonResponse({ data: created }));
-
-    const result = await channels.create({ propertyId: 'prop_1', name: 'Booking' });
-
-    const [url, opts] = mockFetch.mock.calls[0]!;
-    expect(url).toContain('/channels');
-    expect(opts.method).toBe('POST');
-    const body = JSON.parse(opts.body);
-    expect(body.propertyId).toBe('prop_1');
-    expect(result.id).toBe('ch_new');
-  });
-
-  it('sync() sends POST /channels/:id/sync', async () => {
-    const syncResult = { success: true, message: 'Sync triggered', channelId: 'ch_1' };
-    mockFetch.mockResolvedValueOnce(jsonResponse({ data: syncResult }));
-
-    const result = await channels.sync('ch_1');
-
-    const [url, opts] = mockFetch.mock.calls[0]!;
-    expect(url).toContain('/channels/ch_1/sync');
-    expect(opts.method).toBe('POST');
-    expect(result.success).toBe(true);
-    expect(result.channelId).toBe('ch_1');
+  it('legacy mutation methods fail locally without fetch', async () => {
+    await expect(channels.create({ propertyId: 'prop_1', name: 'Booking' })).rejects.toMatchObject({
+      name: 'CapabilityUnavailableError',
+      reason: 'absent',
+    });
+    await expect(channels.sync('ch_1')).rejects.toMatchObject({
+      name: 'CapabilityUnavailableError',
+      reason: 'not_implemented',
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });

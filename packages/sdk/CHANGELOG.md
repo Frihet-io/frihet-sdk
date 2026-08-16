@@ -4,6 +4,33 @@ All notable changes to `@frihet/sdk` will be documented in this file.
 
 ## Unreleased
 
+### Changed (Stay runtime truth)
+
+- The `Stays` resource now follows the actual Frihet runtime instead of the
+  generated scaffold. Only three stay routes exist server-side
+  (`GET /stay/properties`, `GET /stay/reservations`,
+  `GET /stay/reservations/:id`); `POST /stay/reservations` is registered but
+  deliberately 501, and every other stay route is absent. All 36 public
+  method names and signatures are preserved — **zero source/API-shape
+  breaking changes**; previously nonfunctional calls now fail locally with a
+  typed error instead of dispatching to 404/405/501 — but unavailable
+  methods are now `@deprecated` and fail closed with the new
+  `CapabilityUnavailableError` (a `FrihetError`, not an `APIError`) **before
+  any HTTP request**, with `reason: 'absent' | 'not_implemented'`.
+- Live list methods send only runtime-supported query params:
+  `listProperties` allows `q`, `isActive`, `limit`, `offset`;
+  `listReservations` allows `propertyId`, `status`, `checkInFrom`,
+  `checkInTo`, `limit`, `offset`. New `checkInFrom`/`checkInTo` fields on
+  `StayReservationListParams`; deprecated aliases `from`/`to` map to them
+  (setting both alias and canonical param throws `ValidationError`). Any
+  other defined param — the unsupported `q`/`channel` (reservations) and
+  `type` (properties) filters, the inherited `cursor`/`fields`, or an
+  arbitrary unknown key — fails deterministically with
+  `CapabilityUnavailableError` naming the offending param instead of being
+  silently sent or silently dropped. Undefined values are still skipped.
+- New `src/resources/stay.manifest.ts` runtime-truth manifest is the single
+  source of truth driving both the resource class and the test suite.
+
 ### Fixed
 
 - Generate one cryptographically strong UUID v4 for every POST when the caller

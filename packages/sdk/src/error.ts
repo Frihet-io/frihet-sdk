@@ -74,6 +74,37 @@ export class RateLimitError extends APIError {
   }
 }
 
+/**
+ * Raised when the SDK is asked to use a capability the Frihet backend does
+ * not provide. This happens BEFORE any HTTP request is made — it is a local,
+ * deterministic failure, never a server response — so it extends FrihetError,
+ * not APIError.
+ *
+ * `reason` distinguishes:
+ * - 'absent': the backend has no such route at all (calling it would 404/405).
+ * - 'not_implemented': the route is registered but deliberately returns
+ *   501 NOT_IMPLEMENTED (e.g. reservation creation deferred for compliance
+ *   side effects).
+ */
+export class CapabilityUnavailableError extends FrihetError {
+  readonly capability: string;
+  readonly reason: 'absent' | 'not_implemented';
+
+  constructor(capability: string, reason: 'absent' | 'not_implemented', detail?: string) {
+    const explanation = reason === 'absent'
+      ? 'the Frihet backend has no such route'
+      : 'the Frihet backend registers the route but deliberately does not implement it (501)';
+    super(
+      `Capability unavailable: ${capability} — ${explanation}. ` +
+      'No request was sent. This is an SDK-side guard, not a server failure.' +
+      (detail ? ` ${detail}` : ''),
+    );
+    this.name = 'CapabilityUnavailableError';
+    this.capability = capability;
+    this.reason = reason;
+  }
+}
+
 export class TimeoutError extends FrihetError {
   constructor(timeoutMs: number) {
     super(`Request timed out after ${timeoutMs}ms`);

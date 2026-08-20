@@ -366,12 +366,32 @@ export interface QuarterlyTaxes {
 }
 
 export interface FinancialSummary {
+  /**
+   * Date range the summary was computed over. Reflects the `from` / `to`
+   * query params passed to `Intelligence.summary({ from, to })`; each is
+   * `null` when the caller did not supply a bound.
+   *
+   * Pinned against Frihet-ERP origin/main d5f3f3cdf
+   * (functions/src/publicApi.ts lines 2593–2607).
+   */
+  period: { from: string | null; to: string | null };
   revenue: { invoiced: number; paid: number; pending: number; overdue: number };
-  expenses: number;
+  expenses: { total: number };
   profit: number;
-  counts: Record<string, number>;
-  invoiceStatus: Record<string, number>;
-  overdue: { count: number; total: number };
+  counts: {
+    invoices: number;
+    quotes: number;
+    expenses: number;
+    clients: number;
+    products: number;
+  };
+  /**
+   * Invoice counts grouped by status. The canonical key is
+   * `invoicesByStatus` (plural). The earlier `invoiceStatus` key in the SDK
+   * interface was a stale shape that did not match the runtime envelope.
+   */
+  invoicesByStatus: Record<string, number>;
+  overdue: { count: number; amount: number };
 }
 
 export interface SummaryParams {

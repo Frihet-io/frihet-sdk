@@ -2,6 +2,30 @@
 
 All notable changes to `@frihet/sdk` will be documented in this file.
 
+## Unreleased
+
+### Fixed (Intelligence.summary contract)
+
+The `FinancialSummary` interface did not match the `GET /v1/summary`
+response envelope emitted by the Frihet backend (Frihet-ERP origin/main
+`d5f3f3cdf`, `functions/src/publicApi.ts` lines 2593–2607). Runtime callers
+got `undefined` on every renamed field. Brought the type in line with the
+server:
+
+- `expenses: number` → `expenses: { total: number }`
+- `invoiceStatus: Record<string, number>` → `invoicesByStatus: Record<string, number>`
+- `overdue: { count, total }` → `overdue: { count, amount }`
+- missing → `period: { from: string | null; to: string | null }`
+- `counts: Record<string, number>` → typed `{ invoices, quotes, expenses, clients, products }`
+
+Runtime behaviour was never affected — JSON parsing is duck-typed and the
+wrong keys simply yielded `undefined`. TypeScript consumers were silently
+broken since the SDK was first released.
+
+Added `packages/sdk/src/__tests__/intelligence-summary.test.ts` to pin the
+exact envelope (route, verb, from/to params, canonical field names, period
+nullability) so this drift cannot recur undetected.
+
 ## 1.2.1 - 2026-08-17
 
 ### Changed (Channels SDK-first retirement)

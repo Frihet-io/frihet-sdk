@@ -102,7 +102,7 @@ export class HttpClient {
 
   constructor(opts: FrihetOptions) {
     if (!opts.apiKey) {
-      throw new Error('apiKey is required. Get one at https://app.frihet.io/settings/security');
+      throw new Error('apiKey is required. Create one at https://app.frihet.io/settings/api');
     }
     this.apiKey = opts.apiKey;
     this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');

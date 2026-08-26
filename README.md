@@ -21,6 +21,21 @@
 
 ---
 
+## For AI agents
+
+```bash
+export FRIHET_API_KEY=fri_...   # create one at https://app.frihet.io/settings/api
+npx -y frihet status --json     # first useful result: no config file, no login prompt
+```
+
+Both the SDK and the CLI read `FRIHET_API_KEY` from the environment, so an unattended caller never has to write a config file. `frihet login` prompts on a TTY — do not route an agent through it. When no credential is found, the CLI prints a JSON line to stderr carrying `error.code`, `error.obtainAt` and the recoveries that work without a TTY.
+
+**Draft, show, stop.** `POST /v1/invoices` and `/v1/quotes` default to `status: 'draft'` — no fiscal number, no VeriFactu hash, nothing filed with a tax authority. Build the draft, present the totals, and hand the decision back. Sending, marking paid, moving deposits, inviting teammates and changing webhooks all leave Frihet and need an explicit human instruction.
+
+Full contract, including the human-authority table: [AGENTS.md](./AGENTS.md). For the MCP surface, the equivalent machine-readable descriptor is [`frihet-mcp/docs/agent-onboarding.json`](https://github.com/Frihet-io/frihet-mcp/blob/main/docs/agent-onboarding.json).
+
+---
+
 ## SDK
 
 ```bash

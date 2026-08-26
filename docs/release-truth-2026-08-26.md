@@ -96,10 +96,13 @@ Verified locally across all six paths: `IN_SYNC`→0, `PENDING_PUBLISH`→2,
 `--allow-pending`→0, `DIST_MISMATCH`→1 (fatal even under `--allow-pending`),
 unknown flag→3, missing `dist`→3.
 
-**Known gap:** byte-reproducibility is proven on darwin/Node 22 locally. The
-`reproducibility-pin` job is what proves it on `ubuntu-latest`/Node 20; its first
-green run on this PR is that evidence. Until then, linux reproducibility is
-[hypothesis].
+**Cross-platform reproducibility: verified, not assumed.** Proven on darwin/Node 22
+locally and on `ubuntu-latest`/Node 20 in CI — the `reproducibility-pin` job rebuilt
+`42f06cf` on the runner and reported `IN_SYNC` for both packages (6 SDK dist files
+and 1 CLI dist file byte-identical to the published 1.2.0 tarballs), run
+[32978152356](https://github.com/Frihet-io/frihet-sdk/actions/runs/32978152356). The
+job re-runs on every invocation, so a future toolchain change that breaks
+determinism fails the gate closed instead of silently degrading its authority.
 
 ## 5. Recommended release after #11
 

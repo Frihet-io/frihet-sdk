@@ -1,0 +1,101 @@
+# Makes "merged but never published" visible.
+#
+# npm exposes no `gitHead` for @frihet/sdk or frihet, so the usual "compare the
+# registry's recorded commit against main" detector cannot be ported here. The
+# authority used instead is stronger: this repo's `dist` output is byte-reproducible
+# for a pinned toolchain, so a published tarball can be rebuilt and compared byte
+# for byte against its source.
+#
+# That premise is re-proven on every run by the `reproducibility-pin` job before any
+# drift verdict is trusted — a gate that assumed its own authority would be exactly
+# the phantom mechanism it exists to catch.
+#
+# Deliberately a separate workflow from ci.yml: this must never become a merge
+# blocker for a legitimate release-prep PR, and it must keep reporting on main and
+# on a schedule long after the PR that caused the drift is closed.
+name: Publish Drift
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # 07:00 UTC on weekdays — an unpublished release should not survive a working day unseen.
+    - cron: '0 7 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  reproducibility-pin:
+    name: Prove byte-reproducibility on this runner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current ref (detector + pins)
+        uses: actions/checkout@v4
+
+      - name: Resolve pinned release commit
+        id: pin
+        run: echo "commit=$(jq -r '.pins[0].commit' scripts/publish-pins.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout pinned release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pin.outputs.commit }}
+          path: pin
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pin/pnpm-lock.yaml
+
+      # The pinned commit predates the detector, so carry it back in.
+      - name: Stage detector into pinned tree
+        run: |
+          mkdir -p pin/scripts
+          cp scripts/check-publish-drift.mjs pin/scripts/
+
+      - name: Build pinned release
+        working-directory: pin
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Assert published bytes rebuild exactly
+        working-directory: pin
+        run: node scripts/check-publish-drift.mjs --expect-in-sync
+
+  drift:
+    name: Detect publish drift
+    needs: reproducibility-pin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      # On a pull request, a version that is not yet on npm is the expected state of
+      # release prep, so only DIST_MISMATCH blocks — i.e. "you changed published bytes
+      # without bumping the version", which is always wrong and is the condition that
+      # prevents the next drift from being created.
+      - name: Drift check (pull request — pending publishes are expected)
+        if: github.event_name == 'pull_request'
+        run: node scripts/check-publish-drift.mjs --allow-pending
+
+      # On main and on schedule, an unpublished version IS the drift. Strict.
+      - name: Drift check (main / scheduled — strict)
+        if: github.event_name != 'pull_request'
+        run: node scripts/check-publish-drift.mjs

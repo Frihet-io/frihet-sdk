@@ -49,7 +49,11 @@ nullability so this drift cannot recur undetected.
 - **AGENTS.md** at the repository root documents the SDK's contract for
   agents (both using and changing the repo) and exposes the env-only
   quickstart (`FRIHET_API_KEY` + `npx -y frihet status --json`) that
-  does not require a config file or a TTY prompt.
+  does not require a config file or a TTY prompt. **AGENTS.md lives at
+  the repository root and is not packaged into the npm tarball.** The
+  `packages/sdk/README.md` (shipped in the npm package) is the
+  authoritative consumer-facing guide for `@frihet/sdk` consumers;
+  the `AGENTS.md` is the contributor-facing contract.
 
 ### Changed (Stay runtime truth)
 

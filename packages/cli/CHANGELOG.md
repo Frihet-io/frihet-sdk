@@ -36,9 +36,22 @@ There are no CLI command-shape changes.
 - **AGENTS.md** at the repository root documents the CLI's contract
   for agents: env-only quickstart, the draft-first workflow, the
   human-authority table, and the typed-error / retry contract.
+  **AGENTS.md lives at the repository root and is not packaged into
+  the npm tarball.** The `packages/cli/README.md` (shipped in the
+  npm package) is the authoritative consumer-facing guide for `frihet`
+  consumers and now ships a "For AI agents" non-interactive
+  quickstart; the `AGENTS.md` is the contributor-facing contract.
 
 - **README.md** gains a "For AI agents" section cross-linked to the
-  MCP server's generated onboarding descriptor.
+  MCP server's generated onboarding descriptor. The `README.md` is
+  the authoritative consumer-facing guide for the `frihet` npm
+  package; the root `AGENTS.md` is the contributor-facing contract
+  and is **not** included in the npm tarball.
+- **`frihet login` URL hint** corrected. The command prompted
+  `Get your API key at https://app.frihet.io/settings/security`,
+  which is a real screen but not the one that issues API keys. The
+  hint is now `https://app.frihet.io/settings/api`. The CLI README
+  ships the same correction.
 
 - **CLI package now ships vitest** with
   `packages/cli/src/__tests__/agent-contract.test.ts` (4 assertions,

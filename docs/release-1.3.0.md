@@ -98,3 +98,57 @@ For the `1.3.0` release:
 - No npm publish, no dist-tag mutation, no tag, no GitHub Release
   from this branch. The release PR is for review and merge only; the
   actual `pnpm publish` is the owner-authorized step that follows.
+
+## 7. Package surface vs repository guidance
+
+The `AGENTS.md` shipped as part of this release lives **at the repository
+root** (`/AGENTS.md` on GitHub). It is **not** packaged into either
+npm tarball.
+
+| Surface | Where it lives | What consumers see |
+|---|---|---|
+| **NPM package — `@frihet/sdk`** | `packages/sdk/README.md` (published), `dist/index.{cjs,js}` (published), `dist/index.d.{cts,ts}` (published), `dist/*.map` (published) | The library's installed `node_modules/@frihet/sdk/README.md` and `dist/`. |
+| **NPM package — `frihet` (CLI)** | `packages/cli/README.md` (published), `dist/index.js` (published) | The installed `node_modules/frihet/README.md` and `dist/`. |
+| **Repository guidance** | `AGENTS.md` (root, not packaged), `README.md` (root, not packaged) | Visible only to consumers of the GitHub repository, not to consumers of the npm packages. |
+
+The per-package `README.md` is the authoritative consumer-facing guide
+for each npm surface. The `AGENTS.md` at the repo root is the
+contributor-facing contract (build, style, gotchas). Consumers of the
+npm packages do not need the repo's `AGENTS.md` and do not receive it.
+
+## 8. Post-merge pin provenance — required before publish
+
+The `scripts/publish-pins.json` entry for `1.3.0` in this release PR
+references commit `79d2101` (the version-bump commit on the
+`release/sdk-1.3.0` branch) with note `pending verification`. This is
+a placeholder reference, **not** a fabricated SHA — the actual
+canonical release commit does not exist until this PR is squash-merged.
+
+The owner-authorized publish step MUST establish canonical release
+provenance before running `pnpm publish`. The required procedure:
+
+1. **Capture** the exact canonical main SHA after this PR is
+   squash-merged (the single commit GitHub creates on `main` for the
+   squash of `release/sdk-1.3.0`).
+2. **Rebuild** both `1.3.0` packages from that exact SHA with the
+   same toolchain and lockfile that produced the candidate in this PR.
+3. **Byte-compare** the rebuilt `dist/**` against the release
+   candidate's `dist/**`. The release candidate's `dist/**` is the
+   content of the tarballs captured in step 6 of this document.
+4. **Repin** `1.3.0` in `scripts/publish-pins.json` to the canonical
+   main SHA **if and only if** the byte-compare is identical. Update
+   the note to `verified <date>: rebuild matches both published
+   tarballs byte-for-byte`, following the `1.2.0` pin's wording.
+5. **Require** a fresh detector run (`Detect publish drift` +
+   `reproducibility-pin` on the new pin) to complete green before
+   `pnpm publish` is run.
+
+If the byte-compare in step 3 is not identical, the version was
+bumped in source but the build did not reproduce the candidate —
+**do not publish**. The release PR must be re-opened or the
+release PR HEAD must be re-verified.
+
+If the canonical main SHA differs from `79d2101` in any way that
+produces a non-identical `dist/**` (e.g. a follow-up commit before
+merge), the pin reference must be updated to the new SHA, and the
+above steps re-run from step 2.

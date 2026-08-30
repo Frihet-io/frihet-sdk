@@ -96,6 +96,16 @@ env:
   # drift in what this pin resolves to fails the release instead of publishing.
   # (The Node 22 line bundles npm 10.9.8 and cannot be used for publishing.)
   NODE_PUBLISH_VERSION: '24.20.0'
+  # The only account permitted to approve a publish deployment. Asserted against
+  # the environment's required_reviewers, so silently swapping the reviewer for
+  # someone else (or for a team) fails the release rather than passing quietly.
+  REQUIRED_REVIEWER_LOGIN: 'berthelius'
+  # Build toolchain pinned exactly, not by major: the published 1.3.0 bytes were
+  # produced by pnpm 9.15.4 on Node 22.22.2, and `check-publish-drift.mjs` plus
+  # the post-publish re-pack proof both compare BYTES. A floating minor that
+  # changes tsup/esbuild output would turn a correct release red.
+  PNPM_BUILD_VERSION: '9.15.4'
+  NODE_BUILD_VERSION: '22.22.2'
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -108,6 +118,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read # what GitHub's fine-grained table lists for the environments endpoints
     outputs:
       version: ${{ steps.tag.outputs.version }}
       commit: ${{ steps.tag.outputs.commit }}
@@ -179,46 +190,86 @@ jobs:
       # step reads the environment's real configuration and fails the release
       # before any publish job starts if the human gate is missing or toothless.
       #
-      # The exact token scope this endpoint needs on a public repository is not
-      # documented; `contents: read` is what is granted. If it ever returns 403,
-      # add `deployments: read` to this job — do NOT delete this step.
+      # On a PUBLIC repository these endpoints are readable without any token at
+      # all (verified: an unauthenticated GET of /environments returns 200), so
+      # the job token is a convenience, not the authority. `actions: read` is what
+      # GitHub's fine-grained permission table lists for the environments
+      # endpoints. If this ever 403s, widen the permission — do NOT delete the
+      # step, which is the only thing standing between a deleted environment and
+      # an unreviewed publish.
       - name: Assert the npm-publish environment is protected
         env:
           GH_TOKEN: ${{ github.token }}
+          REQUIRED_REVIEWER_LOGIN: ${{ env.REQUIRED_REVIEWER_LOGIN }}
         run: |
           set -euo pipefail
           if ! gh api "repos/${GITHUB_REPOSITORY}/environments/npm-publish" > environment.json; then
-            echo "::error::Cannot read the npm-publish environment. If it does not exist, create it (RELEASING.md §3.1) — a referenced-but-missing environment is auto-created WITHOUT protection rules and would publish with no human approval. If this was a 403, grant this job 'deployments: read'."
+            echo "::error::Cannot read the npm-publish environment. If it does not exist, create it (RELEASING.md §3.1) — a referenced-but-missing environment is auto-created WITHOUT protection rules and would publish with no human approval."
+            exit 1
+          fi
+          if ! gh api "repos/${GITHUB_REPOSITORY}/environments/npm-publish/deployment-branch-policies" > policies.json; then
+            echo "::error::Cannot read npm-publish deployment branch/tag policies. Configure 'Selected branches and tags' with the v* TAG pattern (RELEASING.md §3.1)."
             exit 1
           fi
           node -e '
-            const env = JSON.parse(require("node:fs").readFileSync("environment.json", "utf8"));
+            const fs = require("node:fs");
+            const env = JSON.parse(fs.readFileSync("environment.json", "utf8"));
+            const wanted = process.env.REQUIRED_REVIEWER_LOGIN;
+
             const rules = Array.isArray(env.protection_rules) ? env.protection_rules : [];
-            const reviewers = rules.find((r) => r.type === "required_reviewers");
-            if (!reviewers) {
+            const rule = rules.find((r) => r.type === "required_reviewers");
+            if (!rule) {
               console.error("::error::npm-publish has no required_reviewers protection rule — the human gate does not exist.");
               process.exit(1);
             }
-            const count = Array.isArray(reviewers.reviewers) ? reviewers.reviewers.length : 0;
-            if (count < 1) {
+            const reviewers = Array.isArray(rule.reviewers) ? rule.reviewers : [];
+            if (reviewers.length < 1) {
               console.error("::error::npm-publish requires reviewers but lists none — nobody can approve, and nothing gates the publish.");
               process.exit(1);
             }
+            for (const r of reviewers) {
+              if (r.type !== "User") {
+                console.error("::error::npm-publish reviewer of type " + r.type + " is not allowed; only the named user may approve a publish.");
+                process.exit(1);
+              }
+              const login = r.reviewer && r.reviewer.login;
+              if (login !== wanted) {
+                console.error("::error::npm-publish reviewer \"" + login + "\" is not the expected " + wanted + ".");
+                process.exit(1);
+              }
+            }
+
             const policy = env.deployment_branch_policy;
             if (!policy || policy.custom_branch_policies !== true) {
-              console.error("::error::npm-publish does not restrict deployments to selected tags (deployment_branch_policy.custom_branch_policies must be true). Set it to the v* tag pattern.");
+              console.error("::error::npm-publish does not restrict deployments to selected branches/tags (deployment_branch_policy.custom_branch_policies must be true).");
               process.exit(1);
             }
-            console.log("ok npm-publish: required_reviewers with " + count + " reviewer(s), custom branch/tag policy enabled");
+
+            const list = JSON.parse(fs.readFileSync("policies.json", "utf8"));
+            const policies = Array.isArray(list.branch_policies) ? list.branch_policies : [];
+            if (policies.length === 0) {
+              console.error("::error::npm-publish has custom policies enabled but none defined — every ref would be blocked, or worse, allowed. Add a TAG policy for v*.");
+              process.exit(1);
+            }
+            const nonTag = policies.filter((p) => p.type !== "tag");
+            if (nonTag.length > 0) {
+              console.error("::error::npm-publish has non-tag deployment policies (" + nonTag.map((p) => p.type + ":" + p.name).join(", ") + "). Releases come from tags only; a branch policy would let a branch deploy to the publish environment.");
+              process.exit(1);
+            }
+            if (!policies.some((p) => p.name === "v*")) {
+              console.error("::error::npm-publish has no tag policy named exactly v* (found: " + policies.map((p) => p.name).join(", ") + ").");
+              process.exit(1);
+            }
+            console.log("ok npm-publish: required_reviewers = [" + reviewers.map((r) => r.reviewer.login).join(", ") + "], " + policies.length + " tag-only policy/policies incl. v*");
           '
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
-          version: 9
+          version: ${{ env.PNPM_BUILD_VERSION }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_BUILD_VERSION }}
           cache: pnpm
 
       # INVARIANT 3, part 3: the tag is only a label until the manifests agree
@@ -422,23 +473,39 @@ jobs:
       # and would otherwise re-enter this job against a registry that has moved
       # on. npm's own immutability would reject the duplicate; this fails first,
       # more legibly, and fails closed if the registry cannot be reached.
-      - name: Re-assert @frihet/sdk is not already published
+      # Resumable form of INVARIANT 4. A release that published the SDK and then
+      # failed on a transient readback must be able to re-run without either
+      # republishing (npm forbids it) or someone editing the gate out. This exits
+      # 0 when the version is absent, or when it is present with BYTE-IDENTICAL
+      # content — i.e. this same release already got this far. Present with
+      # different bytes is still exit 3.
+      - name: Re-assert @frihet/sdk is not already published (resumable)
+        id: sdk_gate
         env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
-          node scripts/publish-readback.mjs --assert-absent --package "@frihet/sdk" --version "$VERSION"
+          node scripts/publish-readback.mjs --assert-absent-or-identical \
+            --package "@frihet/sdk" --version "$VERSION" \
+            --tarball "./release-artifacts/frihet-sdk-${VERSION}.tgz"
 
       # `--provenance` is the default under trusted publishing; stating it makes
       # the intent auditable and turns "provenance could not be produced" into a
       # failure instead of a silent downgrade. `--access public` is required for
       # provenance on a scoped package.
       - name: Publish @frihet/sdk
+        if: steps.sdk_gate.outputs.already_published != 'true'
         env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
           npm publish "./release-artifacts/frihet-sdk-${VERSION}.tgz" --access public --provenance
+
+      - name: Skipping publish — this exact release is already on the registry
+        if: steps.sdk_gate.outputs.already_published == 'true'
+        run: |
+          set -euo pipefail
+          echo "@frihet/sdk is already published with identical bytes; resuming at the readback."
 
       # INVARIANT 7: npm reporting success is a claim about a request. This is the
       # claim about the registry's resulting state.
@@ -451,7 +518,8 @@ jobs:
             --package "@frihet/sdk" \
             --version "$VERSION" \
             --tarball "./release-artifacts/frihet-sdk-${VERSION}.tgz" \
-            --require-attestations
+            --require-attestations \
+            --poll
 
   # ---------------------------------------------------------------------------
   publish-cli:
@@ -554,19 +622,29 @@ jobs:
       # INVARIANT 4, re-checked here for the same reason as in the SDK job. Only
       # `frihet` is checked: `@frihet/sdk` is expected to be published by now —
       # that is exactly what the propagation poll above asserted.
-      - name: Re-assert frihet is not already published
+      - name: Re-assert frihet is not already published (resumable)
+        id: cli_gate
         env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
-          node scripts/publish-readback.mjs --assert-absent --package "frihet" --version "$VERSION"
+          node scripts/publish-readback.mjs --assert-absent-or-identical \
+            --package "frihet" --version "$VERSION" \
+            --tarball "./release-artifacts/frihet-${VERSION}.tgz"
 
       - name: Publish frihet
+        if: steps.cli_gate.outputs.already_published != 'true'
         env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
           npm publish "./release-artifacts/frihet-${VERSION}.tgz" --access public --provenance
+
+      - name: Skipping publish — this exact release is already on the registry
+        if: steps.cli_gate.outputs.already_published == 'true'
+        run: |
+          set -euo pipefail
+          echo "frihet is already published with identical bytes; resuming at the readback."
 
       - name: Read the registry back
         env:
@@ -578,7 +656,8 @@ jobs:
             --version "$VERSION" \
             --tarball "./release-artifacts/frihet-${VERSION}.tgz" \
             --require-attestations \
-            --expect-dependency "@frihet/sdk=${VERSION}"
+            --expect-dependency "@frihet/sdk=${VERSION}" \
+            --poll
 
   # ---------------------------------------------------------------------------
   # INVARIANT 9. The readback proved the registry serves the bytes we uploaded.
@@ -596,11 +675,11 @@ jobs:
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
-          version: 9
+          version: ${{ env.PNPM_BUILD_VERSION }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_BUILD_VERSION }}
           cache: pnpm
 
       - name: Install dependencies
@@ -619,6 +698,31 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/check-publish-drift.mjs --expect-in-sync
+
+      # MEDIUM-6: `check-publish-drift.mjs` compares `dist/**` only — by design,
+      # since a doc-only edit is not capability drift. But "the published bytes
+      # rebuild from this source" is a claim about the WHOLE tarball. So re-pack
+      # from the tag and readback the freshly packed file: its sha512 must equal
+      # the registry's `dist.integrity`, which covers the manifest, README,
+      # CHANGELOG, LICENSE and every dist file at once. Verified reproducible on
+      # main (dba101c) with the pinned toolchain before this was made a gate.
+      - name: Prove the FULL published tarballs rebuild from this tag
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          rm -rf repack
+          mkdir -p repack
+          DEST="$(pwd)/repack"
+          ( cd packages/sdk && pnpm pack --pack-destination "$DEST" )
+          ( cd packages/cli && pnpm pack --pack-destination "$DEST" )
+          node scripts/publish-readback.mjs \
+            --package "@frihet/sdk" --version "$VERSION" \
+            --tarball "./repack/frihet-sdk-${VERSION}.tgz"
+          node scripts/publish-readback.mjs \
+            --package "frihet" --version "$VERSION" \
+            --tarball "./repack/frihet-${VERSION}.tgz" \
+            --expect-dependency "@frihet/sdk=${VERSION}"
 
       - name: Clean install from the public registry
         env:

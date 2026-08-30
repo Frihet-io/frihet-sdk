@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, readFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -29,6 +29,8 @@ import { after, before, describe, it } from 'node:test';
 import {
   assertAttestations,
   assertManifestIdentity,
+  assertPublishedBytesIdentical,
+  assertTarballLayout,
   assertPackumentShape,
   assertVersionAbsent,
   assertExactDependencies,
@@ -39,6 +41,7 @@ import {
   parseArgs,
   readTarballManifest,
   sha512Integrity,
+  TARBALL_LIMITS,
 } from '../publish-readback.mjs';
 
 const SCRIPT = resolve(import.meta.dirname, '..', 'publish-readback.mjs');
@@ -53,8 +56,11 @@ const CLI_INTEGRITY =
   'sha512-OBtGiWpBHuxvL14A0Nip+LR6hjosd1hCOXUgdi7nnBYDnq8PFJ/xFLPiCXhY8F75KpjtPwuokfcsgKVfNCfkRQ==';
 
 /** Run the CLI and return its exit code + combined output. Never throws on non-zero. */
-function runCli(args) {
-  const res = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' });
+function runCli(args, extraEnv) {
+  const res = spawnSync(process.execPath, [SCRIPT, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, GITHUB_OUTPUT: '', ...(extraEnv ?? {}) },
+  });
   return { code: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
 }
 
@@ -393,6 +399,110 @@ describe('assertPackumentShape — refuses to reason about a document it cannot 
   });
 });
 
+describe('assertTarballLayout — the archive must only be readable one way', () => {
+  const ok = {
+    paths: ['package/', 'package/package.json', 'package/dist/index.js'],
+    typeChars: ['d', '-', '-'],
+    uncompressedBytes: 1024,
+  };
+
+  it('accepts a normal npm tarball layout', () => {
+    assert.match(assertTarballLayout(ok, 't.tgz'), /^ok archive layout: 3 entries/);
+  });
+
+  it('REJECTS a second top-level directory — pacote strips 1 and the LAST entry wins', () => {
+    assert.throws(
+      () => assertTarballLayout({
+        paths: ['package/', 'package/package.json', 'alternate/', 'alternate/package.json'],
+        typeChars: ['d', '-', 'd', '-'],
+        uncompressedBytes: 1024,
+      }, 't.tgz'),
+      /entry "alternate\/" is outside package\//
+    );
+  });
+
+  it('rejects a second top-level dir even when it carries no manifest', () => {
+    assert.throws(
+      () => assertTarballLayout({ paths: ['package/package.json', 'other/readme'], typeChars: ['-', '-'], uncompressedBytes: 10 }, 't.tgz'),
+      /is outside package\//
+    );
+  });
+
+  it('rejects symlink, hardlink and device entries', () => {
+    for (const t of ['l', 'h', 'c', 'b', 'p', 's']) {
+      assert.throws(
+        () => assertTarballLayout({ paths: ['package/package.json', 'package/x'], typeChars: ['-', t], uncompressedBytes: 10 }, 't.tgz'),
+        /archive type/
+      );
+    }
+  });
+
+  it('rejects absolute paths and ".." traversal', () => {
+    assert.throws(
+      () => assertTarballLayout({ paths: ['package/package.json', '/etc/passwd'], typeChars: ['-', '-'], uncompressedBytes: 10 }, 't.tgz'),
+      /is an absolute path/
+    );
+    assert.throws(
+      () => assertTarballLayout({ paths: ['package/package.json', 'package/../../x'], typeChars: ['-', '-'], uncompressedBytes: 10 }, 't.tgz'),
+      /escapes the archive root/
+    );
+  });
+
+  it('requires exactly one manifest', () => {
+    assert.throws(
+      () => assertTarballLayout({ paths: ['package/dist/a.js'], typeChars: ['-'], uncompressedBytes: 10 }, 't.tgz'),
+      /expected exactly one package\/package\.json, found 0/
+    );
+  });
+
+  it('enforces the entry-count and uncompressed-size bounds', () => {
+    assert.throws(
+      () => assertTarballLayout({ paths: ['package/package.json'], typeChars: ['-'], uncompressedBytes: TARBALL_LIMITS.maxUncompressedBytes + 1 }, 't.tgz'),
+      /uncompressed bytes exceeds/
+    );
+    const many = Array.from({ length: TARBALL_LIMITS.maxEntries + 1 }, (_, i) => `package/f${i}`);
+    assert.throws(
+      () => assertTarballLayout({ paths: many, typeChars: many.map(() => '-'), uncompressedBytes: 10 }, 't.tgz'),
+      /entries exceeds the/
+    );
+  });
+
+  it('fails closed when the two tar listings disagree', () => {
+    assert.throws(
+      () => assertTarballLayout({ paths: ['package/package.json'], typeChars: [], uncompressedBytes: 10 }, 't.tgz'),
+      /tar listings disagree/
+    );
+  });
+
+  it('rejects an empty archive', () => {
+    assert.throws(() => assertTarballLayout({ paths: [], typeChars: [], uncompressedBytes: 0 }, 't.tgz'), /is empty/);
+  });
+});
+
+describe('assertPublishedBytesIdentical — the resume predicate', () => {
+  const buf = Buffer.from('published bytes');
+  const integrity = sha512Integrity(buf);
+  const entry = { dist: { integrity } };
+
+  it('true when the published bytes are the local bytes', () => {
+    assert.equal(assertPublishedBytesIdentical(entry, 'p', '1.0.0', integrity, buf), true);
+  });
+
+  it('throws when the manifest integrity differs', () => {
+    assert.throws(
+      () => assertPublishedBytesIdentical(entry, 'p', '1.0.0', sha512Integrity(Buffer.from('other')), buf),
+      /!= local tarball/
+    );
+  });
+
+  it('throws when the SERVED bytes differ from the manifest', () => {
+    assert.throws(
+      () => assertPublishedBytesIdentical(entry, 'p', '1.0.0', integrity, Buffer.from('tampered')),
+      /tarball served by the registry hashes to/
+    );
+  });
+});
+
 describe('assertManifestIdentity — npm publishes by manifest, not by filename', () => {
   it('accepts the expected identity', () => {
     assert.match(
@@ -510,7 +620,66 @@ describe('--assert-tarball-identity (offline: never touches the registry)', () =
   });
 
   it('readTarballManifest reads the manifest npm would use', () => {
-    assert.deepEqual(readTarballManifest(impostorTgz), { name: 'frihet', version: '1.4.0' });
+    assert.deepEqual(readTarballManifest(impostorTgz).manifest, { name: 'frihet', version: '1.4.0' });
+  });
+
+  // The parser differential that made an earlier version of this check useless.
+  // Verified against npm 11.19.1: this archive dry-runs as `frihet@1.4.0` while
+  // `tar -xO package/package.json` reports `@frihet/sdk@1.4.0`.
+  it('REJECTS the two-manifest archive that npm and tar disagree about (exit 3)', () => {
+    const stage = join(tmp, 'twomanifest');
+    mkdirSync(join(stage, 'package'), { recursive: true });
+    mkdirSync(join(stage, 'alternate'), { recursive: true });
+    writeFileSync(join(stage, 'package', 'package.json'), JSON.stringify({ name: '@frihet/sdk', version: '1.4.0' }));
+    writeFileSync(join(stage, 'alternate', 'package.json'), JSON.stringify({ name: 'frihet', version: '1.4.0' }));
+    const tgz = join(tmp, 'two-manifest.tgz');
+    execFileSync('tar', ['-czf', tgz, '-C', stage, 'package', 'alternate']);
+
+    const r = runCli(['--assert-tarball-identity', '--package', '@frihet/sdk', '--version', '1.4.0', '--tarball', tgz]);
+    assert.equal(r.code, 3, r.out);
+    assert.match(r.out, /is outside package\//);
+  });
+
+  it('rejects a second top-level directory even without a second manifest (exit 3)', () => {
+    const stage = join(tmp, 'seconddir');
+    mkdirSync(join(stage, 'package'), { recursive: true });
+    mkdirSync(join(stage, 'docs'), { recursive: true });
+    writeFileSync(join(stage, 'package', 'package.json'), JSON.stringify({ name: '@frihet/sdk', version: '1.4.0' }));
+    writeFileSync(join(stage, 'docs', 'readme.md'), 'hello');
+    const tgz = join(tmp, 'second-dir.tgz');
+    execFileSync('tar', ['-czf', tgz, '-C', stage, 'package', 'docs']);
+
+    const r = runCli(['--assert-tarball-identity', '--package', '@frihet/sdk', '--version', '1.4.0', '--tarball', tgz]);
+    assert.equal(r.code, 3, r.out);
+    assert.match(r.out, /is outside package\//);
+  });
+
+  it('rejects a symlink entry (exit 3)', () => {
+    const stage = join(tmp, 'symlinked');
+    mkdirSync(join(stage, 'package'), { recursive: true });
+    writeFileSync(join(stage, 'package', 'package.json'), JSON.stringify({ name: '@frihet/sdk', version: '1.4.0' }));
+    symlinkSync('/etc/passwd', join(stage, 'package', 'leak.txt'));
+    const tgz = join(tmp, 'symlink.tgz');
+    execFileSync('tar', ['-czf', tgz, '-C', stage, 'package']);
+
+    const r = runCli(['--assert-tarball-identity', '--package', '@frihet/sdk', '--version', '1.4.0', '--tarball', tgz]);
+    assert.equal(r.code, 3, r.out);
+    assert.match(r.out, /archive type "l"/);
+  });
+
+  it('rejects an archive whose UNCOMPRESSED size blows the bound (exit 3)', () => {
+    // Zeros compress to almost nothing, so the .tgz stays small while the
+    // decompressed stream is far over the limit — the shape of a zip bomb.
+    const stage = join(tmp, 'oversized');
+    mkdirSync(join(stage, 'package'), { recursive: true });
+    writeFileSync(join(stage, 'package', 'package.json'), JSON.stringify({ name: '@frihet/sdk', version: '1.4.0' }));
+    writeFileSync(join(stage, 'package', 'big.bin'), Buffer.alloc(TARBALL_LIMITS.maxUncompressedBytes + 4096));
+    const tgz = join(tmp, 'oversized.tgz');
+    execFileSync('tar', ['-czf', tgz, '-C', stage, 'package']);
+
+    const r = runCli(['--assert-tarball-identity', '--package', '@frihet/sdk', '--version', '1.4.0', '--tarball', tgz]);
+    assert.equal(r.code, 3, r.out);
+    assert.match(r.out, /uncompressed bytes exceeds/);
   });
 });
 
@@ -527,6 +696,7 @@ describe('live readback against the immutable 1.3.0 release', () => {
   let sdkLatestTgz;
   let cliLatest;
   let cliLatestTgz;
+  let absentVersion;
 
   before(async () => {
     // Preflight: prove the registry is reachable. If it is not, fail loudly here
@@ -575,6 +745,16 @@ describe('live readback against the immutable 1.3.0 release', () => {
     assert.ok(cliLatest, 'registry must expose dist-tags.latest for frihet');
     cliLatestTgz = join(tmp, `cli-${cliLatest}.tgz`);
     await download('frihet', cliLatest, cliLatestTgz);
+
+    // A hardcoded "absent" fixture is a time bomb: 9.9.9 is a version someone
+    // could legitimately publish one day, and this suite would then fail for a
+    // reason that has nothing to do with the code. Derive it from the live
+    // packument instead, and prove it really is absent before relying on it.
+    absentVersion = `${Number(sdkLatest.split('.')[0]) + 1000}.0.0`;
+    assert.ok(
+      !Object.keys(doc.versions).includes(absentVersion),
+      `${absentVersion} must not exist for the absence fixtures to mean anything`
+    );
 
     // A one-byte append: the smallest possible corruption a readback must catch.
     tamperedTgz = join(tmp, 'tampered.tgz');
@@ -648,9 +828,9 @@ describe('live readback against the immutable 1.3.0 release', () => {
   });
 
   it('a version the registry has never seen fails (exit 3)', () => {
-    const r = runCli(['--package', '@frihet/sdk', '--version', '9.9.9', '--tarball', sdkTgz]);
+    const r = runCli(['--package', '@frihet/sdk', '--version', absentVersion, '--tarball', sdkTgz]);
     assert.equal(r.code, 3, r.out);
-    assert.match(r.out, /9\.9\.9 is not on the registry/);
+    assert.match(r.out, /is not on the registry/);
   });
 
   it('--assert-absent FAILS for the already-published 1.3.0 (exit 3)', () => {
@@ -660,19 +840,59 @@ describe('live readback against the immutable 1.3.0 release', () => {
   });
 
   it('--assert-absent PASSES for a version that has never existed (exit 0)', () => {
-    const r = runCli(['--package', '@frihet/sdk', '--version', '9.9.9', '--assert-absent']);
+    const r = runCli(['--package', '@frihet/sdk', '--version', absentVersion, '--assert-absent']);
     assert.equal(r.code, 0, r.out);
-    assert.match(r.out, /ok @frihet\/sdk@9\.9\.9 is not on the registry/);
+    assert.match(r.out, /ok @frihet\/sdk@.* is not on the registry/);
   });
 
   it('--assert-absent FAILS CLOSED when the registry is unreachable — an outage is not a "no" (exit 3)', () => {
     // Port 9 (discard) on loopback: refused immediately, no timeout, no DNS.
     const r = runCli([
-      '--package', '@frihet/sdk', '--version', '9.9.9', '--assert-absent',
+      '--package', '@frihet/sdk', '--version', absentVersion, '--assert-absent',
       '--registry', 'http://127.0.0.1:9',
     ]);
     assert.equal(r.code, 3, r.out);
     assert.match(r.out, /Refusing to treat an unanswered question as "not published"/);
+  });
+
+  it('--assert-absent-or-identical: absent version -> exit 0, already_published=false', () => {
+    const out = join(tmp, 'gho-absent.txt');
+    writeFileSync(out, '');
+    const r = runCli(
+      ['--assert-absent-or-identical', '--package', '@frihet/sdk', '--version', absentVersion, '--tarball', sdkTgz],
+      { GITHUB_OUTPUT: out }
+    );
+    assert.equal(r.code, 0, r.out);
+    assert.match(readFileSync(out, 'utf8'), /^already_published=false$/m);
+  });
+
+  it('--assert-absent-or-identical: already published with IDENTICAL bytes -> exit 0, resume', () => {
+    const out = join(tmp, 'gho-identical.txt');
+    writeFileSync(out, '');
+    const r = runCli(
+      ['--assert-absent-or-identical', '--package', '@frihet/sdk', '--version', '1.3.0', '--tarball', sdkTgz],
+      { GITHUB_OUTPUT: out }
+    );
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /already published, identical bytes — resuming/);
+    assert.match(readFileSync(out, 'utf8'), /^already_published=true$/m);
+  });
+
+  it('--assert-absent-or-identical: already published with DIFFERENT bytes -> exit 3', () => {
+    const r = runCli([
+      '--assert-absent-or-identical', '--package', '@frihet/sdk', '--version', '1.3.0', '--tarball', tamperedTgz,
+    ]);
+    assert.equal(r.code, 3, r.out);
+    assert.match(r.out, /already published with DIFFERENT bytes/);
+  });
+
+  it('--assert-absent-or-identical: unreachable registry -> exit 3', () => {
+    const r = runCli([
+      '--assert-absent-or-identical', '--package', '@frihet/sdk', '--version', '1.3.0', '--tarball', sdkTgz,
+      '--registry', 'http://127.0.0.1:9',
+    ]);
+    assert.equal(r.code, 3, r.out);
+    assert.match(r.out, /Refusing to treat an unanswered question/);
   });
 
   it('the CLI tarball published for 1.3.0 really carries a rewritten, exact SDK dependency', () => {

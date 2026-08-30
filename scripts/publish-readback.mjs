@@ -10,9 +10,13 @@
  * it against the exact local tarball whose bytes were handed to `npm publish`.
  *
  * SCOPE (stated, not implied): this verifies the REGISTRY MANIFEST and the
- * TARBALL BYTES for one version of one package. It does not verify the contents
- * of the tarball (that is `check-publish-drift.mjs`, which rebuilds dist/** from
- * source), and it does not cryptographically verify the provenance attestation —
+ * TARBALL BYTES for one version of one package. It does not by itself prove the
+ * bytes rebuild from source: `check-publish-drift.mjs` proves that for `dist/**`
+ * only, and the FULL tarball (manifest, README, CHANGELOG, LICENSE and all) is
+ * proved in the `post-publish` job by re-packing from the tag and running this
+ * script against the freshly packed file, so that a byte difference anywhere in
+ * the archive fails the release. It does not cryptographically verify the
+ * provenance attestation —
  * `--require-attestations` asserts only that the registry records an attestation
  * for this version, which is what a caller can observe from outside npm.
  *
@@ -26,12 +30,29 @@
  *
  * TARBALL-IDENTITY MODE (`--assert-tarball-identity`) — npm derives a package's
  * IDENTITY from the manifest INSIDE the tarball, not from its filename. A file
- * named `frihet-sdk-1.4.0.tgz` whose `package/package.json` says `name: frihet`
- * would publish the CLI out of the SDK job: CLI-first, irreversibly, having
- * passed every filename-based check on the way. This mode reads the manifest out
- * of the tarball bytes and asserts `name` and `version` are what the caller
- * expects. Identity comes from the manifest, so renaming the file changes
- * nothing — which is exactly the property being tested.
+ * named `frihet-sdk-1.4.0.tgz` whose manifest says `name: frihet` would publish
+ * the CLI out of the SDK job: CLI-first, irreversibly, having passed every
+ * filename-based check on the way.
+ *
+ * Reading `package/package.json` is NOT sufficient, and an earlier version of
+ * this script was wrong about that. pacote extracts an npm tarball with
+ * `strip=1` and the LAST matching entry wins, so an archive containing BOTH
+ * `package/package.json` (`@frihet/sdk`) AND `alternate/package.json` (`frihet`)
+ * makes `tar -xO package/package.json` report one identity while npm publishes
+ * the other. Verified against npm 11.19.1: such a tarball dry-runs as
+ * `frihet@1.4.0`. So the whole archive LAYOUT is validated first — every entry
+ * under `package/`, exactly one manifest, regular files and directories only,
+ * bounded entry count and uncompressed size — and only then is the manifest
+ * parsed. A layout this script cannot fully account for is exit 3.
+ *
+ * RESUME MODE (`--assert-absent-or-identical`) — a release that published the
+ * SDK and then failed on a transient readback must be resumable without either
+ * republishing (impossible) or hand-editing the gate. Exits 0 when the version
+ * is absent (nothing published yet) OR present with byte-identical `dist.integrity`
+ * and served tarball (this exact release already went out). Present with
+ * DIFFERENT bytes is exit 3. It reports `already_published=true|false` on
+ * `$GITHUB_OUTPUT` so the caller can skip the publish step rather than attempt a
+ * republish npm would reject.
  *
  * ABSENCE MODE (`--assert-absent`) — the pre-publish "never republish" gate.
  * Exits 0 ONLY when the registry document was successfully retrieved AND the
@@ -50,7 +71,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const DEFAULT_REGISTRY = process.env.NPM_REGISTRY ?? 'https://registry.npmjs.org';
@@ -223,12 +244,133 @@ export function assertManifestIdentity(manifest, expectedName, expectedVersion) 
   return `ok tarball manifest identity is ${expectedName}@${expectedVersion} (read from package/package.json inside the tgz)`;
 }
 
-/** Extract and parse `package/package.json` from a gzipped npm tarball. */
+/**
+ * Bounds on a package tarball. The published 1.3.0 SDK is 530 KB uncompressed
+ * across ~10 entries, so these are three orders of magnitude of headroom while
+ * still refusing to decompress something unbounded.
+ */
+export const TARBALL_LIMITS = {
+  maxUncompressedBytes: 25 * 1024 * 1024,
+  maxEntries: 10_000,
+};
+
+/**
+ * Validate the LAYOUT of an npm tarball before trusting anything inside it.
+ *
+ * `paths` comes from `tar -tzf` (authoritative for names) and `typeChars` from
+ * the first column of `tar -tvzf` (the mode string's type character, which is
+ * the same convention in GNU tar and bsdtar). They describe the same entries in
+ * the same order; a length mismatch means the two listings disagree and is
+ * itself fail-closed.
+ *
+ * The rule being enforced is "this archive can only be read one way". pacote
+ * extracts with strip=1 and the last matching entry wins, so any second
+ * top-level directory, any extra manifest, or any link entry creates a gap
+ * between what this script reads and what npm publishes.
+ */
+export function assertTarballLayout({ paths, typeChars, uncompressedBytes }, tarballPath) {
+  if (paths.length !== typeChars.length) {
+    throw new Error(
+      `${tarballPath}: tar listings disagree (${paths.length} names vs ${typeChars.length} type rows) — refusing to interpret it`
+    );
+  }
+  if (paths.length === 0) throw new Error(`${tarballPath} is empty`);
+  if (paths.length > TARBALL_LIMITS.maxEntries) {
+    throw new Error(`${tarballPath}: ${paths.length} entries exceeds the ${TARBALL_LIMITS.maxEntries} limit`);
+  }
+  if (uncompressedBytes > TARBALL_LIMITS.maxUncompressedBytes) {
+    throw new Error(
+      `${tarballPath}: ${uncompressedBytes} uncompressed bytes exceeds the ${TARBALL_LIMITS.maxUncompressedBytes} limit`
+    );
+  }
+
+  let manifestCount = 0;
+  for (let i = 0; i < paths.length; i++) {
+    const raw = paths[i];
+    const type = typeChars[i];
+
+    // Regular files and directories only. 'l' symlink, 'h' hardlink, and the
+    // device/fifo types can all make an extractor and this script disagree.
+    if (type !== '-' && type !== 'd') {
+      throw new Error(`${tarballPath}: entry "${raw}" has archive type "${type}" — only regular files and directories are allowed`);
+    }
+    if (raw.startsWith('/')) {
+      throw new Error(`${tarballPath}: entry "${raw}" is an absolute path`);
+    }
+    const normalized = raw.replace(/\/+$/, '');
+    if (normalized === '' ) continue;
+    const segments = normalized.split('/');
+    if (segments.includes('..')) {
+      throw new Error(`${tarballPath}: entry "${raw}" escapes the archive root with ".."`);
+    }
+    if (segments[0] !== 'package') {
+      throw new Error(
+        `${tarballPath}: entry "${raw}" is outside package/ — npm extracts with strip=1 and the LAST matching entry wins, so a second top-level directory can change which manifest is published`
+      );
+    }
+    if (normalized === 'package/package.json') manifestCount++;
+    // Any other entry that would become "package.json" after strip=1.
+    else if (segments.length === 2 && segments[1] === 'package.json') {
+      throw new Error(`${tarballPath}: entry "${raw}" is a second manifest after strip=1`);
+    }
+  }
+
+  if (manifestCount !== 1) {
+    throw new Error(`${tarballPath}: expected exactly one package/package.json, found ${manifestCount}`);
+  }
+  return `ok archive layout: ${paths.length} entries, all under package/, exactly one manifest, ${uncompressedBytes} uncompressed bytes`;
+}
+
+/** List an npm tarball's entries, their archive types, and its uncompressed size. */
+export function readTarballListing(tarballPath) {
+  const run = (args, input) => {
+    try {
+      return execFileSync(args[0], args.slice(1), {
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        ...(input ?? {}),
+      });
+    } catch (err) {
+      throw new Error(`cannot list ${tarballPath}: ${err.message}`);
+    }
+  };
+  const paths = run(['tar', '-tzf', tarballPath]).split('\n').filter((l) => l !== '');
+  const verbose = run(['tar', '-tvzf', tarballPath]).split('\n').filter((l) => l !== '');
+  const typeChars = verbose.map((line) => line.charAt(0));
+
+  // Exact uncompressed size, which also bounds decompression itself.
+  let uncompressedBytes;
+  try {
+    uncompressedBytes = Number(
+      execFileSync('sh', ['-c', `gzip -dc "$1" | wc -c`, 'sh', tarballPath], {
+        encoding: 'utf8',
+        maxBuffer: 1024,
+      }).trim()
+    );
+  } catch (err) {
+    throw new Error(`cannot measure uncompressed size of ${tarballPath}: ${err.message}`);
+  }
+  if (!Number.isFinite(uncompressedBytes)) {
+    throw new Error(`cannot measure uncompressed size of ${tarballPath}`);
+  }
+  return { paths, typeChars, uncompressedBytes };
+}
+
+/**
+ * Validate the layout, then extract and parse the one manifest it is allowed to
+ * contain. Layout first: parsing a manifest out of an archive that can be read
+ * two ways tells you nothing about what npm will publish.
+ */
 export function readTarballManifest(tarballPath) {
+  const listing = readTarballListing(tarballPath);
+  const layoutLine = assertTarballLayout(listing, tarballPath);
+
   let raw;
   try {
     raw = execFileSync('tar', ['-xOzf', tarballPath, 'package/package.json'], {
       encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (err) {
@@ -237,11 +379,13 @@ export function readTarballManifest(tarballPath) {
   if (!raw || raw.trim() === '') {
     throw new Error(`${tarballPath} contains no package/package.json`);
   }
+  let manifest;
   try {
-    return JSON.parse(raw);
+    manifest = JSON.parse(raw);
   } catch (err) {
     throw new Error(`package/package.json inside ${tarballPath} is not valid JSON: ${err.message}`);
   }
+  return { manifest, layoutLine };
 }
 
 /**
@@ -278,6 +422,8 @@ export function parseArgs(argv) {
     expectDependencies: [],
     assertAbsent: false,
     assertTarballIdentity: false,
+    assertAbsentOrIdentical: false,
+    pollAttempts: 1,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -294,6 +440,8 @@ export function parseArgs(argv) {
       case '--require-attestations': out.requireAttestations = true; break;
       case '--assert-absent': out.assertAbsent = true; break;
       case '--assert-tarball-identity': out.assertTarballIdentity = true; break;
+      case '--assert-absent-or-identical': out.assertAbsentOrIdentical = true; break;
+      case '--poll': out.pollAttempts = 10; break;
       case '--expect-dependency': {
         const raw = needValue();
         const eq = raw.indexOf('=');
@@ -311,8 +459,18 @@ export function parseArgs(argv) {
   for (const required of ['package', 'version']) {
     if (!out[required]) throw new Error(`--${required} is required`);
   }
-  if (out.assertAbsent && out.assertTarballIdentity) {
-    throw new Error('--assert-absent and --assert-tarball-identity are different modes; run them as separate invocations');
+  const modes = ['assertAbsent', 'assertTarballIdentity', 'assertAbsentOrIdentical'].filter((m) => out[m]);
+  if (modes.length > 1) {
+    throw new Error(`${modes.map((m) => '--' + m.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())).join(' and ')} are different modes; run them as separate invocations`);
+  }
+  if (out.assertAbsentOrIdentical) {
+    if (!out.tarball) throw new Error('--tarball is required');
+    const ignored = [];
+    if (out.requireAttestations) ignored.push('--require-attestations');
+    if (out.expectDependencies.length > 0) ignored.push('--expect-dependency');
+    if (ignored.length > 0) {
+      throw new Error(`--assert-absent-or-identical cannot be combined with ${ignored.join(', ')}`);
+    }
   }
   if (out.assertAbsent) {
     // A flag that would be silently ignored is a flag that lies about what ran.
@@ -323,6 +481,8 @@ export function parseArgs(argv) {
     if (ignored.length > 0) {
       throw new Error(`--assert-absent cannot be combined with ${ignored.join(', ')} (nothing is published yet to compare against)`);
     }
+  } else if (out.assertAbsentOrIdentical) {
+    // requirements already checked above
   } else if (out.assertTarballIdentity) {
     if (!out.tarball) throw new Error('--tarball is required');
     const ignored = [];
@@ -335,6 +495,27 @@ export function parseArgs(argv) {
     throw new Error('--tarball is required');
   }
   return out;
+}
+
+/**
+ * Publish a single-line boolean on `$GITHUB_OUTPUT` so the workflow can SKIP the
+ * publish step on a resume instead of attempting a republish npm would reject.
+ * Outside Actions this is a no-op.
+ */
+export function reportAlreadyPublished(value) {
+  const target = process.env.GITHUB_OUTPUT;
+  if (!target) return;
+  appendFileSync(target, `already_published=${value ? 'true' : 'false'}\n`);
+}
+
+/**
+ * Compare a published version against the local tarball byte-for-byte.
+ * Returns `true` when they are identical (resume is safe), throws otherwise.
+ */
+export function assertPublishedBytesIdentical(entry, name, version, localIntegrity, servedBuf) {
+  assertIntegrityMatchesLocal(entry, name, version, localIntegrity);
+  assertServedTarballMatches(entry, name, version, servedBuf);
+  return true;
 }
 
 async function fetchJson(url) {
@@ -363,12 +544,78 @@ async function main(argv) {
     console.log('[publish-readback] mode    : ASSERT-TARBALL-IDENTITY (offline; npm publishes by manifest, not by filename)');
     console.log();
     try {
-      const manifest = readTarballManifest(resolve(opts.tarball));
+      const { manifest, layoutLine } = readTarballManifest(resolve(opts.tarball));
+      console.log(layoutLine);
       console.log(assertManifestIdentity(manifest, opts.package, opts.version));
     } catch (err) {
       failClosed(err.message);
     }
     console.log(`\n[publish-readback] OK — the tarball really is ${opts.package}@${opts.version}.`);
+    process.exit(0);
+  }
+
+  if (opts.assertAbsentOrIdentical) {
+    console.log(`[publish-readback] package : ${opts.package}@${opts.version}`);
+    console.log(`[publish-readback] registry: ${opts.registry}`);
+    console.log(`[publish-readback] local   : ${opts.tarball}`);
+    console.log('[publish-readback] mode    : ASSERT-ABSENT-OR-IDENTICAL (no-republish gate, resumable)');
+    console.log();
+
+    let localBuf;
+    try {
+      localBuf = readFileSync(resolve(opts.tarball));
+    } catch (err) {
+      failClosed(`cannot read local tarball ${opts.tarball}: ${err.message}`);
+    }
+    if (localBuf.length === 0) failClosed(`local tarball ${opts.tarball} is empty`);
+    const localIntegrity = sha512Integrity(localBuf);
+    console.log(`ok local tarball read (${localBuf.length} bytes) -> ${localIntegrity}`);
+
+    let doc;
+    try {
+      doc = await fetchJson(`${opts.registry}/${encodeURIComponent(opts.package)}`);
+    } catch (err) {
+      failClosed(
+        `cannot reach the registry document for ${opts.package}: ${err.message}. ` +
+          'Refusing to treat an unanswered question as "not published".'
+      );
+    }
+    try {
+      assertPackumentShape(doc, opts.package);
+    } catch (err) {
+      failClosed(err.message);
+    }
+
+    if (!Object.keys(doc.versions).includes(opts.version)) {
+      console.log(`ok ${opts.package}@${opts.version} is not on the registry — safe to publish`);
+      reportAlreadyPublished(false);
+      console.log(`\n[publish-readback] OK — nothing published yet for ${opts.package}@${opts.version}.`);
+      process.exit(0);
+    }
+
+    // Present. The ONLY safe reason to continue is that these exact bytes are
+    // already the published bytes — i.e. this same release got as far as
+    // publishing and then failed later. Anything else is a republish attempt.
+    const entry = doc.versions[opts.version];
+    const tarballUrl = entry?.dist?.tarball;
+    if (!tarballUrl) failClosed(`${opts.package}@${opts.version}: registry manifest has no dist.tarball`);
+    let servedBuf;
+    try {
+      servedBuf = await fetchBuffer(tarballUrl);
+    } catch (err) {
+      failClosed(`downloading ${tarballUrl} failed: ${err.message}`);
+    }
+    try {
+      assertPublishedBytesIdentical(entry, opts.package, opts.version, localIntegrity, servedBuf);
+    } catch (err) {
+      failClosed(
+        `${err.message} — ${opts.package}@${opts.version} is already published with DIFFERENT bytes. ` +
+          'Published versions are immutable; bump the version.'
+      );
+    }
+    console.log(`ok ${opts.package}@${opts.version} already published, identical bytes — resuming`);
+    reportAlreadyPublished(true);
+    console.log(`\n[publish-readback] OK — this exact release is already on the registry; skip the publish step.`);
     process.exit(0);
   }
 
@@ -418,48 +665,44 @@ async function main(argv) {
   const localIntegrity = sha512Integrity(localBuf);
   console.log(`ok local tarball read (${localBuf.length} bytes) -> ${localIntegrity}`);
 
-  let doc;
-  try {
-    doc = await fetchJson(`${opts.registry}/${encodeURIComponent(opts.package)}`);
-  } catch (err) {
-    failClosed(`registry lookup for ${opts.package} failed: ${err.message}`);
-  }
-
-  try {
-    console.log(assertVersionPresent(doc, opts.package, opts.version));
-  } catch (err) {
-    failClosed(err.message);
-  }
-
-  const entry = doc.versions[opts.version];
-
-  try {
-    console.log(assertIntegrityMatchesLocal(entry, opts.package, opts.version, localIntegrity));
-  } catch (err) {
-    failClosed(err.message);
-  }
-
-  const tarballUrl = entry?.dist?.tarball;
-  if (!tarballUrl) failClosed(`${opts.package}@${opts.version}: registry manifest has no dist.tarball`);
-  let servedBuf;
-  try {
-    servedBuf = await fetchBuffer(tarballUrl);
-  } catch (err) {
-    failClosed(`downloading ${tarballUrl} failed: ${err.message}`);
-  }
-
-  try {
-    console.log(assertServedTarballMatches(entry, opts.package, opts.version, servedBuf));
-    console.log(assertLatestTag(doc, opts.package, opts.version));
+  // A publish that just succeeded is not instantly visible on every edge, and
+  // provenance attestations are attached asynchronously. With --poll the whole
+  // assertion set is retried on a bounded schedule so a release does not fail on
+  // propagation lag; without it (the default, used by the tests) it runs once.
+  const runAssertions = async () => {
+    const lines = [];
+    const doc = await fetchJson(`${opts.registry}/${encodeURIComponent(opts.package)}`);
+    lines.push(assertVersionPresent(doc, opts.package, opts.version));
+    const entry = doc.versions[opts.version];
+    lines.push(assertIntegrityMatchesLocal(entry, opts.package, opts.version, localIntegrity));
+    const tarballUrl = entry?.dist?.tarball;
+    if (!tarballUrl) throw new Error(`${opts.package}@${opts.version}: registry manifest has no dist.tarball`);
+    const servedBuf = await fetchBuffer(tarballUrl);
+    lines.push(assertServedTarballMatches(entry, opts.package, opts.version, servedBuf));
+    lines.push(assertLatestTag(doc, opts.package, opts.version));
     if (opts.requireAttestations) {
-      console.log(assertAttestations(entry, opts.package, opts.version));
+      lines.push(assertAttestations(entry, opts.package, opts.version));
     }
-    for (const line of assertExactDependencies(entry, opts.package, opts.version, opts.expectDependencies)) {
-      console.log(line);
+    lines.push(...assertExactDependencies(entry, opts.package, opts.version, opts.expectDependencies));
+    return lines;
+  };
+
+  let lines;
+  let lastError;
+  for (let attempt = 1; attempt <= opts.pollAttempts; attempt++) {
+    try {
+      lines = await runAssertions();
+      if (attempt > 1) console.log(`(satisfied on attempt ${attempt}/${opts.pollAttempts})`);
+      break;
+    } catch (err) {
+      lastError = err;
+      if (attempt === opts.pollAttempts) break;
+      console.log(`waiting for the registry to converge (attempt ${attempt}/${opts.pollAttempts}): ${err.message}`);
+      await new Promise((r) => setTimeout(r, 15_000));
     }
-  } catch (err) {
-    failClosed(err.message);
   }
+  if (!lines) failClosed(lastError?.message ?? 'readback failed for an unrecorded reason');
+  for (const line of lines) console.log(line);
 
   console.log(`\n[publish-readback] OK — the registry serves exactly the published bytes of ${opts.package}@${opts.version}.`);
   process.exit(0);

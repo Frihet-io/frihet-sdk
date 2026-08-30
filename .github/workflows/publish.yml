@@ -33,6 +33,12 @@
 # ("only run scripts for directory type publishes"), so no rebuild can occur
 # between the bytes we hashed and the bytes npm uploads.
 #
+# SHELL SAFETY: no `${{ }}` expression is ever interpolated into a `run:` body.
+# Values reach the shell through step-level `env:` and are read as "$VAR". The
+# tag filter below only admits `v<digits>.<digits>.<digits>`, so nothing
+# dangerous can reach these values today — but the injection would appear the day
+# that filter is loosened, and the env indirection means it never can.
+#
 # NOT END-TO-END TESTABLE FROM THIS REPO: the first successful run requires the
 # npm-side trusted publisher and the GitHub environment, both of which are owner
 # actions performed outside this repository. See RELEASING.md.
@@ -46,10 +52,12 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
 
-# Two releases must never interleave; and a running release must never be
-# cancelled halfway between publishing the SDK and publishing the CLI.
+# Workflow-wide group, deliberately NOT keyed on the ref: two different tags must
+# not release concurrently either, or the second could win the `latest` dist-tag
+# race. And a running release must never be cancelled halfway between publishing
+# the SDK and publishing the CLI.
 concurrency:
-  group: publish-${{ github.ref }}
+  group: publish
   cancel-in-progress: false
 
 # Deny by default at the workflow level; every job grants only what it needs.
@@ -75,6 +83,7 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.tag.outputs.version }}
+      commit: ${{ steps.tag.outputs.commit }}
     steps:
       - name: Checkout tagged commit (full history for the ancestry proof)
         uses: actions/checkout@v4
@@ -84,7 +93,15 @@ jobs:
       # INVARIANT 3 (tag authority), part 1: the tag must be an ANNOTATED tag.
       # A lightweight tag is just a ref anyone with push access can move; an
       # annotated tag is an object with an author and a date that this run records.
-      - name: Assert the tag is annotated
+      #
+      # This step also resolves the tag to its COMMIT and exports it. Everything
+      # downstream uses that value rather than GITHUB_SHA, because for a pushed
+      # annotated tag GITHUB_SHA can be the SHA of the TAG OBJECT rather than of
+      # the commit it points at. Feeding a tag-object SHA to `git merge-base
+      # --is-ancestor` would fail on every legitimate release. `^{commit}`
+      # dereferences either kind of tag to the commit, so this is correct
+      # regardless of which value GITHUB_SHA happens to carry.
+      - name: Assert the tag is annotated and resolve its commit
         id: tag
         run: |
           set -euo pipefail
@@ -94,35 +111,39 @@ jobs:
             echo "::error::${TAG} is a ${OBJ_TYPE} object, not an annotated tag. Re-tag with 'git tag -a'."
             exit 1
           fi
-          echo "annotated tag ${TAG} -> $(git rev-parse "${TAG}^{commit}")"
+          COMMIT="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          echo "ok annotated tag ${TAG} -> ${COMMIT}"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
+
+      # The tree being built must be the tagged commit itself, not whatever the
+      # checkout happened to land on.
+      - name: Assert the checked-out tree is the tagged commit
+        env:
+          COMMIT: ${{ steps.tag.outputs.commit }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [ "$HEAD_SHA" != "$COMMIT" ]; then
+            echo "::error::HEAD is ${HEAD_SHA} but the tag points at ${COMMIT}. Refusing to build a tree the tag does not describe."
+            exit 1
+          fi
+          echo "ok HEAD == ${COMMIT}"
 
       # INVARIANT 3, part 2: the tagged commit must already be on main. This is
       # what stops a release being cut from a side branch, a fork, or a commit
       # that never passed CI on main.
       - name: Assert the tagged commit is an ancestor of origin/main
+        env:
+          COMMIT: ${{ steps.tag.outputs.commit }}
         run: |
           set -euo pipefail
           git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
-            echo "::error::${GITHUB_SHA} is not an ancestor of origin/main. Releases are cut from main only."
+          if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
+            echo "::error::${COMMIT} is not an ancestor of origin/main. Releases are cut from main only."
             exit 1
           fi
-          echo "ok ${GITHUB_SHA} is an ancestor of origin/main"
-
-      # INVARIANT 3, part 3: the tag is only a label until the manifests agree
-      # with it. Both packages release in lockstep at the same version.
-      - name: Assert both package versions equal the tag
-        run: |
-          set -euo pipefail
-          VERSION="${{ steps.tag.outputs.version }}"
-          SDK_VERSION="$(node -p "require('./packages/sdk/package.json').version")"
-          CLI_VERSION="$(node -p "require('./packages/cli/package.json').version")"
-          if [ "$SDK_VERSION" != "$VERSION" ] || [ "$CLI_VERSION" != "$VERSION" ]; then
-            echo "::error::tag says ${VERSION} but @frihet/sdk is ${SDK_VERSION} and frihet is ${CLI_VERSION}"
-            exit 1
-          fi
-          echo "ok both packages declare ${VERSION}"
+          echo "ok ${COMMIT} is an ancestor of origin/main"
 
       - uses: pnpm/action-setup@v4
         with:
@@ -133,21 +154,33 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      # INVARIANT 4 (no republish): npm would reject a duplicate anyway, but by
-      # then a human has already approved a deployment and half a release may be
-      # out. `npm view <pkg>@<version>` exits non-zero when the version does not
-      # exist, so a ZERO exit here is the failure.
-      - name: Assert neither version is already published
+      # INVARIANT 3, part 3: the tag is only a label until the manifests agree
+      # with it. Both packages release in lockstep at the same version.
+      - name: Assert both package versions equal the tag
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ steps.tag.outputs.version }}"
-          for PKG in "@frihet/sdk" "frihet"; do
-            if npm view "${PKG}@${VERSION}" version > /dev/null 2>&1; then
-              echo "::error::${PKG}@${VERSION} is already on the registry. Published versions are immutable — bump the version."
-              exit 1
-            fi
-            echo "ok ${PKG}@${VERSION} is not on the registry"
-          done
+          SDK_VERSION="$(node -p "require('./packages/sdk/package.json').version")"
+          CLI_VERSION="$(node -p "require('./packages/cli/package.json').version")"
+          if [ "$SDK_VERSION" != "$VERSION" ] || [ "$CLI_VERSION" != "$VERSION" ]; then
+            echo "::error::tag says ${VERSION} but @frihet/sdk is ${SDK_VERSION} and frihet is ${CLI_VERSION}"
+            exit 1
+          fi
+          echo "ok both packages declare ${VERSION}"
+
+      # INVARIANT 4 (no republish). Deliberately NOT `npm view … 2>/dev/null`:
+      # that idiom reads any non-zero exit as "absent", so a registry outage or a
+      # 5xx would wave a republish through. `--assert-absent` exits 0 only when
+      # the registry document was actually retrieved AND the version is missing
+      # from it; an unreachable registry is exit 3.
+      - name: Assert neither version is already published
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/publish-readback.mjs --assert-absent --package "@frihet/sdk" --version "$VERSION"
+          node scripts/publish-readback.mjs --assert-absent --package "frihet" --version "$VERSION"
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
@@ -170,9 +203,10 @@ jobs:
       # bytes themselves rather than on package.json — because the rewrite is
       # exactly what could fail silently.
       - name: Assert the packed CLI depends on the exact SDK version
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ steps.tag.outputs.version }}"
           DEP="$(tar -xOzf "release-artifacts/frihet-${VERSION}.tgz" package/package.json \
             | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s).dependencies||{};process.stdout.write(String(d["@frihet/sdk"]))})')"
           if [ "$DEP" != "$VERSION" ]; then
@@ -253,36 +287,36 @@ jobs:
           cd release-artifacts
           sha512sum -c checksums.txt
 
+      # INVARIANT 4, re-checked inside the publish job. `verify` already proved
+      # this, but GitHub's "re-run failed jobs" reuses `verify`'s cached success
+      # and would otherwise re-enter this job against a registry that has moved
+      # on. npm's own immutability would reject the duplicate; this fails first,
+      # more legibly, and fails closed if the registry cannot be reached.
+      - name: Re-assert @frihet/sdk is not already published
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/publish-readback.mjs --assert-absent --package "@frihet/sdk" --version "$VERSION"
+
       # `--provenance` is the default under trusted publishing; stating it makes
       # the intent auditable and turns "provenance could not be produced" into a
       # failure instead of a silent downgrade. `--access public` is required for
       # provenance on a scoped package.
-      # INVARIANT 4, re-checked inside the publish job. `verify` already proved this,
-      # but GitHub's "re-run failed jobs" reuses `verify`'s cached success and would
-      # otherwise re-enter this job against a registry that has moved on. npm's own
-      # immutability would reject the duplicate; this fails first and more legibly.
-      - name: Re-assert @frihet/sdk is not already published
-        run: |
-          set -euo pipefail
-          VERSION="${{ needs.verify.outputs.version }}"
-          if npm view "@frihet/sdk@${VERSION}" version > /dev/null 2>&1; then
-            echo "::error::@frihet/sdk@${VERSION} is already on the registry. Published versions are immutable — never republish."
-            exit 1
-          fi
-          echo "ok @frihet/sdk@${VERSION} is not on the registry"
-
       - name: Publish @frihet/sdk
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ needs.verify.outputs.version }}"
           npm publish "./release-artifacts/frihet-sdk-${VERSION}.tgz" --access public --provenance
 
       # INVARIANT 7: npm reporting success is a claim about a request. This is the
       # claim about the registry's resulting state.
       - name: Read the registry back
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ needs.verify.outputs.version }}"
           node scripts/publish-readback.mjs \
             --package "@frihet/sdk" \
             --version "$VERSION" \
@@ -325,11 +359,14 @@ jobs:
 
       # INVARIANT 5: `needs: publish-sdk` proves the job finished; it does not
       # prove the registry SERVES the SDK yet. Poll until it does, bounded, and
-      # fail rather than publish a CLI whose dependency 404s.
+      # fail rather than publish a CLI whose dependency 404s. This one requires a
+      # POSITIVE match, so `npm view` is the right tool here: a network failure
+      # produces no match and the loop keeps waiting, then fails.
       - name: Assert the registry already serves the SDK at this version
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ needs.verify.outputs.version }}"
           for ATTEMPT in 1 2 3 4 5 6 7 8 9 10; do
             SEEN="$(npm view "@frihet/sdk@${VERSION}" version 2>/dev/null || true)"
             if [ "$SEEN" = "$VERSION" ]; then
@@ -354,9 +391,10 @@ jobs:
           sha512sum -c checksums.txt
 
       - name: Re-assert the packed CLI depends on the exact SDK version
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ needs.verify.outputs.version }}"
           DEP="$(tar -xOzf "release-artifacts/frihet-${VERSION}.tgz" package/package.json \
             | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s).dependencies||{};process.stdout.write(String(d["@frihet/sdk"]))})')"
           if [ "$DEP" != "$VERSION" ]; then
@@ -365,29 +403,28 @@ jobs:
           fi
           echo "ok packed CLI depends on @frihet/sdk ${VERSION} exactly"
 
-      # INVARIANT 4, re-checked inside the publish job (see the SDK job for why).
-      # Only `frihet` is checked here: `@frihet/sdk` is expected to be published
-      # by now — that is what the propagation poll above asserted.
+      # INVARIANT 4, re-checked here for the same reason as in the SDK job. Only
+      # `frihet` is checked: `@frihet/sdk` is expected to be published by now —
+      # that is exactly what the propagation poll above asserted.
       - name: Re-assert frihet is not already published
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ needs.verify.outputs.version }}"
-          if npm view "frihet@${VERSION}" version > /dev/null 2>&1; then
-            echo "::error::frihet@${VERSION} is already on the registry. Published versions are immutable — never republish."
-            exit 1
-          fi
-          echo "ok frihet@${VERSION} is not on the registry"
+          node scripts/publish-readback.mjs --assert-absent --package "frihet" --version "$VERSION"
 
       - name: Publish frihet
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ needs.verify.outputs.version }}"
           npm publish "./release-artifacts/frihet-${VERSION}.tgz" --access public --provenance
 
       - name: Read the registry back
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ needs.verify.outputs.version }}"
           node scripts/publish-readback.mjs \
             --package "frihet" \
             --version "$VERSION" \
@@ -427,9 +464,10 @@ jobs:
         run: node scripts/check-publish-drift.mjs --expect-in-sync
 
       - name: Clean install from the public registry
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ needs.verify.outputs.version }}"
           WORK="$(mktemp -d)"
           cd "$WORK"
           npm init -y > /dev/null

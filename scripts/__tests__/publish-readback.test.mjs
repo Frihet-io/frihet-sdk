@@ -28,6 +28,7 @@ import { after, before, describe, it } from 'node:test';
 
 import {
   assertAttestations,
+  assertVersionAbsent,
   assertExactDependencies,
   assertIntegrityMatchesLocal,
   assertLatestTag,
@@ -102,6 +103,22 @@ describe('parseArgs', () => {
     assert.throws(() => parseArgs([...base, 'nodelimiter']), /expects <name>=<exactVersion>/);
     assert.throws(() => parseArgs([...base, '=1.0.0']), /expects <name>=<exactVersion>/);
     assert.throws(() => parseArgs([...base, 'pkg=']), /expects <name>=<exactVersion>/);
+  });
+
+  it('--assert-absent does not require --tarball', () => {
+    const o = parseArgs(['--package', 'frihet', '--version', '9.9.9', '--assert-absent']);
+    assert.equal(o.assertAbsent, true);
+    assert.equal(o.tarball, null);
+  });
+
+  it('--assert-absent refuses flags it would silently ignore', () => {
+    const base = ['--package', 'frihet', '--version', '9.9.9', '--assert-absent'];
+    assert.throws(() => parseArgs([...base, '--tarball', 'a.tgz']), /cannot be combined with --tarball/);
+    assert.throws(() => parseArgs([...base, '--require-attestations']), /cannot be combined with --require-attestations/);
+    assert.throws(
+      () => parseArgs([...base, '--expect-dependency', 'x=1.0.0']),
+      /cannot be combined with --expect-dependency/
+    );
   });
 
   it('honours --registry and --require-attestations', () => {
@@ -271,6 +288,28 @@ describe('assertExactDependencies', () => {
   });
 });
 
+describe('assertVersionAbsent', () => {
+  const doc = { versions: { '1.2.0': {}, '1.3.0': {} }, 'dist-tags': { latest: '1.3.0' } };
+
+  it('passes when the version has never been published', () => {
+    assert.match(assertVersionAbsent(doc, 'frihet', '9.9.9'), /^ok frihet@9\.9\.9 is not on the registry \(2 version\(s\)/);
+  });
+
+  it('fails when the version already exists — this is the no-republish gate', () => {
+    assert.throws(() => assertVersionAbsent(doc, 'frihet', '1.3.0'), /is ALREADY published/);
+  });
+
+  it('refuses to report absence from a malformed document instead of guessing', () => {
+    assert.throws(() => assertVersionAbsent({}, 'frihet', '9.9.9'), /has no "versions" object/);
+    assert.throws(() => assertVersionAbsent(null, 'frihet', '9.9.9'), /has no "versions" object/);
+    assert.throws(() => assertVersionAbsent({ versions: null }, 'frihet', '9.9.9'), /has no "versions" object/);
+  });
+
+  it('treats a package with zero published versions as absent, not as an error', () => {
+    assert.match(assertVersionAbsent({ versions: {} }, 'brand-new', '1.0.0'), /^ok brand-new@1\.0\.0 is not on the registry \(0 version\(s\)/);
+  });
+});
+
 /* ================================================================ *
  * 2. CLI argument handling (no network needed — these fail before any fetch)
  * ================================================================ */
@@ -394,6 +433,28 @@ describe('live readback against the immutable 1.3.0 release', () => {
     const r = runCli(['--package', '@frihet/sdk', '--version', '9.9.9', '--tarball', sdkTgz]);
     assert.equal(r.code, 3, r.out);
     assert.match(r.out, /9\.9\.9 is not on the registry/);
+  });
+
+  it('--assert-absent FAILS for the already-published 1.3.0 (exit 3)', () => {
+    const r = runCli(['--package', '@frihet/sdk', '--version', '1.3.0', '--assert-absent']);
+    assert.equal(r.code, 3, r.out);
+    assert.match(r.out, /1\.3\.0 is ALREADY published/);
+  });
+
+  it('--assert-absent PASSES for a version that has never existed (exit 0)', () => {
+    const r = runCli(['--package', '@frihet/sdk', '--version', '9.9.9', '--assert-absent']);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /ok @frihet\/sdk@9\.9\.9 is not on the registry/);
+  });
+
+  it('--assert-absent FAILS CLOSED when the registry is unreachable — an outage is not a "no" (exit 3)', () => {
+    // Port 9 (discard) on loopback: refused immediately, no timeout, no DNS.
+    const r = runCli([
+      '--package', '@frihet/sdk', '--version', '9.9.9', '--assert-absent',
+      '--registry', 'http://127.0.0.1:9',
+    ]);
+    assert.equal(r.code, 3, r.out);
+    assert.match(r.out, /Refusing to treat an unanswered question as "not published"/);
   });
 
   it('the CLI tarball published for 1.3.0 really carries a rewritten, exact SDK dependency', () => {

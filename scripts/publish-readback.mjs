@@ -16,13 +16,21 @@
  * `--require-attestations` asserts only that the registry records an attestation
  * for this version, which is what a caller can observe from outside npm.
  *
- * Assertions, all of which must pass for exit 0:
+ * READBACK MODE (default) — assertions, all of which must pass for exit 0:
  *   1. the version exists in the registry document
  *   2. `dist.integrity` is sha512 and equals the sha512 of the LOCAL tarball
  *   3. the tarball the registry serves downloads and re-hashes to that same sha512
  *   4. `dist-tags.latest` === this version
  *   5. `dist.attestations` is present            (only with --require-attestations)
  *   6. each --expect-dependency matches EXACTLY  (no range, no `workspace:`)
+ *
+ * ABSENCE MODE (`--assert-absent`) — the pre-publish "never republish" gate.
+ * Exits 0 ONLY when the registry document was successfully retrieved AND the
+ * version is absent from it. This is deliberately not `npm view … 2>/dev/null`:
+ * that idiom reads ANY non-zero exit as "absent", so a DNS failure, a 5xx or a
+ * registry outage would wave a republish through. Here, an unreachable registry,
+ * an HTTP error, unparseable JSON, or a package-level 404 are all exit 3 — an
+ * unanswerable question is not a "no".
  *
  * Exit codes:
  *   0  every assertion passed
@@ -139,6 +147,26 @@ export function assertExactDependencies(entry, name, version, expectations) {
   return lines;
 }
 
+/**
+ * ABSENCE MODE. The inverse of `assertVersionPresent`, and NOT simply its
+ * negation: this one also refuses to answer when the document itself is not
+ * trustworthy. A registry document with no `versions` object at all is a
+ * malformed answer, not an empty one, so it fails rather than reporting absence.
+ */
+export function assertVersionAbsent(doc, name, version) {
+  if (!doc || typeof doc !== 'object' || typeof doc.versions !== 'object' || doc.versions === null) {
+    throw new Error(`${name}: registry document has no "versions" object — cannot conclude that ${version} is absent`);
+  }
+  const versions = Object.keys(doc.versions);
+  if (versions.includes(version)) {
+    throw new Error(
+      `${name}@${version} is ALREADY published. Published versions are immutable — bump the version, never republish.`
+    );
+  }
+  const latest = doc['dist-tags']?.latest ?? '(none)';
+  return `ok ${name}@${version} is not on the registry (${versions.length} version(s) published, latest ${latest})`;
+}
+
 /* ------------------------------------------------------------------ *
  * CLI
  * ------------------------------------------------------------------ */
@@ -151,6 +179,7 @@ export function parseArgs(argv) {
     registry: DEFAULT_REGISTRY,
     requireAttestations: false,
     expectDependencies: [],
+    assertAbsent: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -165,6 +194,7 @@ export function parseArgs(argv) {
       case '--tarball': out.tarball = needValue(); break;
       case '--registry': out.registry = needValue(); break;
       case '--require-attestations': out.requireAttestations = true; break;
+      case '--assert-absent': out.assertAbsent = true; break;
       case '--expect-dependency': {
         const raw = needValue();
         const eq = raw.indexOf('=');
@@ -179,8 +209,20 @@ export function parseArgs(argv) {
         throw new Error(`unknown argument: ${arg}`);
     }
   }
-  for (const required of ['package', 'version', 'tarball']) {
+  for (const required of ['package', 'version']) {
     if (!out[required]) throw new Error(`--${required} is required`);
+  }
+  if (out.assertAbsent) {
+    // A flag that would be silently ignored is a flag that lies about what ran.
+    const ignored = [];
+    if (out.tarball) ignored.push('--tarball');
+    if (out.requireAttestations) ignored.push('--require-attestations');
+    if (out.expectDependencies.length > 0) ignored.push('--expect-dependency');
+    if (ignored.length > 0) {
+      throw new Error(`--assert-absent cannot be combined with ${ignored.join(', ')} (nothing is published yet to compare against)`);
+    }
+  } else if (!out.tarball) {
+    throw new Error('--tarball is required');
   }
   return out;
 }
@@ -203,6 +245,33 @@ async function main(argv) {
     opts = parseArgs(argv);
   } catch (err) {
     failClosed(err.message);
+  }
+
+  if (opts.assertAbsent) {
+    console.log(`[publish-readback] package : ${opts.package}@${opts.version}`);
+    console.log(`[publish-readback] registry: ${opts.registry}`);
+    console.log('[publish-readback] mode    : ASSERT-ABSENT (pre-publish no-republish gate)');
+    console.log();
+
+    let absenceDoc;
+    try {
+      absenceDoc = await fetchJson(`${opts.registry}/${encodeURIComponent(opts.package)}`);
+    } catch (err) {
+      // Including a package-level 404: for a package that is known to exist, an
+      // absent manifest means the registry is not answering, not that the
+      // version is free.
+      failClosed(
+        `cannot reach the registry document for ${opts.package}: ${err.message}. ` +
+          'Refusing to treat an unanswered question as "not published".'
+      );
+    }
+    try {
+      console.log(assertVersionAbsent(absenceDoc, opts.package, opts.version));
+    } catch (err) {
+      failClosed(err.message);
+    }
+    console.log(`\n[publish-readback] OK — ${opts.package}@${opts.version} is safe to publish.`);
+    process.exit(0);
   }
 
   console.log(`[publish-readback] package : ${opts.package}@${opts.version}`);

@@ -55,6 +55,14 @@ jobs:
           ref: ${{ steps.pin.outputs.commit }}
           path: pin
 
+      # Bind the claim to the evidence. The versions in publish-pins.json are
+      # otherwise decorative: a pin could claim an old commit is 999.0.0, win
+      # selection on that number, and send this job to rebuild a tree that is
+      # really some other release — which would then pass --expect-in-sync and
+      # report that reproducibility holds for a release never re-proven.
+      - name: Assert the pinned tree is the release the pin claims
+        run: node scripts/resolve-release-pin.mjs --assert-tree pin
+
       - uses: pnpm/action-setup@v4
         with:
           version: 9

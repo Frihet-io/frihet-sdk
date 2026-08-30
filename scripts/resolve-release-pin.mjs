@@ -47,7 +47,10 @@ import { appendFileSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 
-const REPO_ROOT = resolve(import.meta.dirname, '..');
+// Not `import.meta.dirname`: that is Node >= 20.11, while this repo's engines field
+// allows 18. On 18 it is undefined, so the module threw a TypeError at import time and
+// the process exited 1 — an unreadable failure instead of this file's fail-closed 3.
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DEFAULT_PINS = join(REPO_ROOT, 'scripts', 'publish-pins.json');
 const PACKAGES_DIR = join(REPO_ROOT, 'packages');
 
@@ -57,11 +60,9 @@ const COMMIT_RE = /^[0-9a-f]{40}$/;
 // on its face, and "01.2.0" is not the string npm published.
 const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-// npm's published name grammar. Beyond correctness this is a security boundary:
-// package names reach `$GITHUB_OUTPUT`, and a name containing a newline could
-// append a second `commit=<sha>` line that the runner's parser would accept as
-// the winning assignment — steering the pinned checkout to an arbitrary commit.
-const PACKAGE_NAME_RE = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
+// Scoped-name split, verbatim from validate-npm-package-name.
+const SCOPED_PACKAGE_RE = /^(?:@([^/]+?)\/)?([^/]+?)$/;
+const NAME_EXCLUSION_LIST = new Set(['node_modules', 'favicon.ico']);
 const MAX_PACKAGE_NAME_LENGTH = 214;
 const KNOWN_STATUSES = new Set(['verified', 'pending']);
 
@@ -79,6 +80,50 @@ function reject(reason) {
 
 function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * npm's real package-name rules, ported from validate-npm-package-name's
+ * `validForNewPackages` (errors AND legacy warnings both disqualify): no leading
+ * `.`/`-`/`_`, no surrounding whitespace, not `node_modules`/`favicon.ico`, <= 214
+ * chars, no capitals, none of `~'!()*`, and URL-clean — with the scoped escape
+ * hatch where `@scope/name` is fine if each part is URL-clean on its own. A
+ * hand-rolled character class got this wrong in both directions: it accepted
+ * `-pkg`, `~pkg`, `node_modules` and `favicon.ico`, and rejected the perfectly
+ * valid `@scope/_pkg` and `@_scope/pkg`.
+ *
+ * SCOPE (stated): the validator's "is a core module name" warning is not ported —
+ * that would mean vendoring Node's builtin list for no gain here, since the
+ * package-set check already constrains names to the ones this repo publishes.
+ *
+ * Beyond correctness this is a security boundary: package names reach
+ * `$GITHUB_OUTPUT`, and a name containing a newline could append a second
+ * `commit=<sha>` line that the runner's parser would accept as the winning
+ * assignment — steering the pinned checkout to an arbitrary commit.
+ *
+ * @returns {string|null} the reason it is invalid, or null when valid
+ */
+export function npmPackageNameError(name) {
+  if (typeof name !== 'string') return 'must be a string';
+  if (name.length === 0) return 'length must be greater than zero';
+  if (name.startsWith('.')) return 'cannot start with a period';
+  if (name.startsWith('-')) return 'cannot start with a hyphen';
+  if (name.startsWith('_')) return 'cannot start with an underscore';
+  if (name.trim() !== name) return 'cannot contain leading or trailing spaces';
+  if (NAME_EXCLUSION_LIST.has(name.toLowerCase())) return `${name.toLowerCase()} is not a valid package name`;
+  if (name.length > MAX_PACKAGE_NAME_LENGTH) return `cannot contain more than ${MAX_PACKAGE_NAME_LENGTH} characters`;
+  if (name.toLowerCase() !== name) return 'cannot contain capital letters';
+  if (/[~'!()*]/.test(name.split('/').slice(-1)[0])) return 'cannot contain special characters ("~\'!()*")';
+  if (encodeURIComponent(name) !== name) {
+    const match = name.match(SCOPED_PACKAGE_RE);
+    if (match) {
+      const [, scope, pkg] = match;
+      if (pkg.startsWith('.')) return 'cannot start with a period';
+      if (scope !== undefined && encodeURIComponent(scope) === scope && encodeURIComponent(pkg) === pkg) return null;
+    }
+    return 'can only contain URL-friendly characters';
+  }
+  return null;
 }
 
 /**
@@ -120,14 +165,14 @@ function isRealIsoDate(value) {
  *
  * @returns {string[]} sorted package names
  */
-export function discoverPublishablePackages(packagesDir = PACKAGES_DIR) {
+export function readPublishableManifests(packagesDir = PACKAGES_DIR) {
   let dirs;
   try {
     dirs = readdirSync(packagesDir, { withFileTypes: true }).filter((d) => d.isDirectory());
   } catch (err) {
     reject(`cannot read ${packagesDir}: ${err.message}`);
   }
-  const names = [];
+  const manifests = [];
   for (const d of dirs) {
     const manifestPath = join(packagesDir, d.name, 'package.json');
     let manifest;
@@ -137,11 +182,52 @@ export function discoverPublishablePackages(packagesDir = PACKAGES_DIR) {
       continue;
     }
     if (manifest.private === true) continue;
-    if (!manifest.name) reject(`${manifestPath} is publishable but has no name`);
-    names.push(manifest.name);
+    if (!manifest.name || !manifest.version) {
+      reject(`${manifestPath} is publishable but has no name/version`);
+    }
+    manifests.push({ name: manifest.name, version: manifest.version });
   }
-  if (names.length === 0) reject(`discovered zero publishable packages under ${packagesDir}`);
-  return names.sort();
+  if (manifests.length === 0) reject(`discovered zero publishable packages under ${packagesDir}`);
+  return manifests.sort((a, b) => (a.name < b.name ? -1 : 1));
+}
+
+/** @returns {string[]} sorted names of the packages this repo publishes */
+export function discoverPublishablePackages(packagesDir = PACKAGES_DIR) {
+  return readPublishableManifests(packagesDir).map((m) => m.name);
+}
+
+/**
+ * Bind the selected pin to the tree that was actually checked out.
+ *
+ * Without this, the versions in publish-pins.json are decorative. A pin could
+ * claim commit 42f06cf is `999.0.0`, win selection on that number, and send the
+ * workflow to check out a tree whose manifests really say 1.2.0 — the rebuild
+ * would then re-prove 1.2.0 against npm, pass `--expect-in-sync`, and report
+ * that reproducibility holds while the release the pin named was never touched.
+ * The claim and the evidence have to be the same release.
+ *
+ * @param {object} pin the selected pin
+ * @param {string} treeDir root of the checked-out pinned tree
+ */
+export function assertTreeMatchesPin(pin, treeDir) {
+  const manifests = readPublishableManifests(join(treeDir, 'packages'));
+  const tree = new Map(manifests.map((m) => [m.name, m.version]));
+
+  const pinNames = Object.keys(pin.packages).sort();
+  const treeNames = [...tree.keys()].sort();
+  if (pinNames.length !== treeNames.length || pinNames.some((n, i) => n !== treeNames[i])) {
+    reject(
+      `pinned tree ${treeDir} publishes [${treeNames.join(', ')}] but pin ${pin.commit} covers ` +
+        `[${pinNames.join(', ')}] — the pin does not describe this tree`,
+    );
+  }
+
+  const mismatches = pinNames
+    .filter((name) => tree.get(name) !== pin.packages[name])
+    .map((name) => `${name}: pin says ${pin.packages[name]}, tree says ${tree.get(name)}`);
+  if (mismatches.length > 0) {
+    reject(`pinned tree ${treeDir} is not the release the pin claims (${pin.commit}) — ${mismatches.join('; ')}`);
+  }
 }
 
 function validateVerifiedPin(pin, index, expectedPackages) {
@@ -161,8 +247,9 @@ function validateVerifiedPin(pin, index, expectedPackages) {
     reject(`${at} (${pin.commit}): packages is empty — a pin that pins nothing cannot be authority`);
   }
   for (const name of names) {
-    if (name.length > MAX_PACKAGE_NAME_LENGTH || !PACKAGE_NAME_RE.test(name)) {
-      reject(`${at} (${pin.commit}): ${JSON.stringify(name)} is not a valid npm package name`);
+    const nameError = npmPackageNameError(name);
+    if (nameError) {
+      reject(`${at} (${pin.commit}): ${JSON.stringify(name)} is not a valid npm package name — ${nameError}`);
     }
     const version = pin.packages[name];
     if (typeof version !== 'string') {
@@ -274,11 +361,29 @@ export function loadPinsDocument(path) {
   } catch (err) {
     reject(`cannot read ${path}: ${err.message}`);
   }
+  let doc;
   try {
-    return JSON.parse(raw);
+    doc = JSON.parse(raw);
   } catch (err) {
     reject(`cannot parse ${path} as JSON: ${err.message}`);
   }
+
+  // Canonical form, or nothing. JSON.parse silently keeps the LAST of duplicate
+  // keys, so `{"@frihet/sdk":"1.0.0","@frihet/sdk":"3.0.0"}` parsed to 3.0.0 and
+  // swapping the two literals changed the resolved release — positional authority
+  // sneaking back in through a channel the schema checks never see. Re-serializing
+  // collapses duplicates, so a file containing any cannot match its own canonical
+  // form. It freezes indentation and trailing newline as a side effect.
+  const canonical = `${JSON.stringify(doc, null, 2)}\n`;
+  if (raw !== canonical) {
+    reject(
+      `${path} is not in canonical JSON form (2-space indent, trailing newline, no duplicate keys). ` +
+        'Rewrite it with: node -e "const f=process.argv[1],fs=require(\'fs\');' +
+        'fs.writeFileSync(f,JSON.stringify(JSON.parse(fs.readFileSync(f,\'utf8\')),null,2)+String.fromCharCode(10))" ' +
+        `${path}`,
+    );
+  }
+  return doc;
 }
 
 function failClosed(reason) {
@@ -301,17 +406,18 @@ export function assertSingleLine(key, value) {
 }
 
 function parseArgs(argv) {
-  const options = { pinsPath: DEFAULT_PINS, githubOutput: false };
+  const options = { pinsPath: DEFAULT_PINS, githubOutput: false, assertTree: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--github-output') {
       options.githubOutput = true;
-    } else if (arg === '--pins') {
+    } else if (arg === '--pins' || arg === '--assert-tree') {
       const value = argv[i + 1];
       if (typeof value !== 'string' || value.length === 0 || value.startsWith('--')) {
-        failClosed('--pins requires a file path');
+        failClosed(`${arg} requires a ${arg === '--pins' ? 'file' : 'directory'} path`);
       }
-      options.pinsPath = resolve(value);
+      if (arg === '--pins') options.pinsPath = resolve(value);
+      else options.assertTree = resolve(value);
       i += 1;
     } else {
       // An unknown flag must never be read as a weaker mode.
@@ -329,6 +435,9 @@ function main(argv) {
   try {
     expectedPackages = discoverPublishablePackages();
     selection = selectCanonicalPin(loadPinsDocument(options.pinsPath), { expectedPackages });
+    // Selection first, then bind it to the tree: asserting against a tree we did
+    // not justify selecting would prove the wrong thing.
+    if (options.assertTree) assertTreeMatchesPin(selection.pin, options.assertTree);
   } catch (err) {
     failClosed(err instanceof PinResolutionError ? err.message : (err?.stack ?? String(err)));
   }
@@ -340,6 +449,10 @@ function main(argv) {
     `[release-pin] selected ${versions.join(' + ')} → ${pin.commit.slice(0, 7)}… ` +
       `(latest verified of ${verifiedCount} verified, ${pendingCount} pending ignored)`,
   );
+
+  if (options.assertTree) {
+    console.error(`[release-pin] pinned tree ${options.assertTree} matches the pin: ${versions.join(' + ')}`);
+  }
 
   if (options.githubOutput) {
     const target = process.env.GITHUB_OUTPUT;

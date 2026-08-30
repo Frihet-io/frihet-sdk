@@ -14,14 +14,24 @@
 import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { assertSingleLine, discoverPublishablePackages, selectCanonicalPin } from '../resolve-release-pin.mjs';
+import {
+  assertSingleLine,
+  assertTreeMatchesPin,
+  discoverPublishablePackages,
+  npmPackageNameError,
+  readPublishableManifests,
+  selectCanonicalPin,
+} from '../resolve-release-pin.mjs';
 
-const RESOLVER = resolve(import.meta.dirname, '..', 'resolve-release-pin.mjs');
-const REAL_PINS = resolve(import.meta.dirname, '..', 'publish-pins.json');
+const SCRIPTS_DIR = fileURLToPath(new URL('..', import.meta.url));
+const RESOLVER = join(SCRIPTS_DIR, 'resolve-release-pin.mjs');
+const REAL_PINS = join(SCRIPTS_DIR, 'publish-pins.json');
+const REPO_ROOT = join(SCRIPTS_DIR, '..');
 
 const tempDirs = [];
 after(() => {
@@ -37,7 +47,8 @@ function tempDir() {
 /** Write a pins document (or raw string) to a temp file and return its path. */
 function writePins(content) {
   const file = join(tempDir(), 'publish-pins.json');
-  writeFileSync(file, typeof content === 'string' ? content : JSON.stringify(content, null, 2));
+  // Canonical form (2-space indent + trailing newline) — loadPinsDocument requires it.
+  writeFileSync(file, typeof content === 'string' ? content : `${JSON.stringify(content, null, 2)}\n`);
   return file;
 }
 
@@ -444,12 +455,17 @@ describe('Round 2 — cross-model review findings', () => {
       }
     });
 
-    it('rejects a package name longer than npm allows (214 chars)', () => {
-      const long = `a${'b'.repeat(214)}`;
+    it('accepts exactly 214 characters and rejects 215 (both boundaries)', () => {
+      const at214 = 'a'.repeat(214);
+      const at215 = 'a'.repeat(215);
+      assert.equal(at214.length, 214);
+      assert.equal(at215.length, 215);
+      assert.equal(npmPackageNameError(at214), null);
+      assert.match(npmPackageNameError(at215), /more than 214 characters/);
       rejects(
-        { pins: [{ commit: 'a'.repeat(40), status: 'verified', verifiedAt: '2026-08-30', packages: { [long]: '1.0.0' } }] },
+        { pins: [{ commit: 'a'.repeat(40), status: 'verified', verifiedAt: '2026-08-30', packages: { [at215]: '1.0.0' } }] },
         /is not a valid npm package name/,
-        [long],
+        [at215],
       );
     });
 
@@ -551,6 +567,224 @@ describe('Round 2 — cross-model review findings', () => {
       const run = runCli(['--pins', writePins(doc)]);
       assert.equal(run.status, 3);
       assert.match(run.stderr, /one commit cannot have produced two releases/);
+    });
+  });
+});
+
+/**
+ * Round 3 — pinning tests for the second cross-model review. Same convention:
+ * each `it` carries the exact input that was reproduced passing before the fix.
+ */
+describe('Round 3 — cross-model review findings', () => {
+  const rejects = (doc, match, expected = EXPECTED_PACKAGES) =>
+    assert.throws(() => selectCanonicalPin(doc, { expectedPackages: expected }), match);
+
+  /** Build a fake checked-out tree: <dir>/packages/<x>/package.json */
+  function makeTree(packages) {
+    const dir = tempDir();
+    for (const [name, manifest] of Object.entries(packages)) {
+      const pkgDir = join(dir, 'packages', name);
+      mkdirSync(pkgDir, { recursive: true });
+      writeFileSync(join(pkgDir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+    }
+    return dir;
+  }
+
+  describe('1. the pin must describe the tree that was checked out', () => {
+    const pinned = pin(COMMIT_A, '999.0.0', '999.0.0');
+
+    it('rejects a tree whose manifests are a different release than the pin claims', () => {
+      // The reproduced hole: declare an old commit as 999.0.0, win selection on
+      // that number, and the workflow rebuilds a tree that is really 1.2.0 —
+      // --expect-in-sync then passes and "reproducibility holds" for a release
+      // that was never re-proven.
+      const tree = makeTree({
+        sdk: { name: '@frihet/sdk', version: '1.2.0' },
+        cli: { name: 'frihet', version: '1.2.0' },
+      });
+      assert.throws(
+        () => assertTreeMatchesPin(pinned, tree),
+        /is not the release the pin claims .* pin says 999\.0\.0, tree says 1\.2\.0/,
+      );
+    });
+
+    it('rejects a tree missing one of the pinned packages', () => {
+      const tree = makeTree({ sdk: { name: '@frihet/sdk', version: '999.0.0' } });
+      assert.throws(() => assertTreeMatchesPin(pinned, tree), /the pin does not describe this tree/);
+    });
+
+    it('rejects a tree carrying an extra publishable package', () => {
+      const tree = makeTree({
+        sdk: { name: '@frihet/sdk', version: '999.0.0' },
+        cli: { name: 'frihet', version: '999.0.0' },
+        extra: { name: '@frihet/extra', version: '1.0.0' },
+      });
+      assert.throws(() => assertTreeMatchesPin(pinned, tree), /the pin does not describe this tree/);
+    });
+
+    it('ignores private packages in the tree, like the detector does', () => {
+      const tree = makeTree({
+        sdk: { name: '@frihet/sdk', version: '999.0.0' },
+        cli: { name: 'frihet', version: '999.0.0' },
+        internal: { name: '@frihet/internal', version: '0.0.1', private: true },
+      });
+      assert.doesNotThrow(() => assertTreeMatchesPin(pinned, tree));
+    });
+
+    it('accepts a tree that matches the pin exactly', () => {
+      const tree = makeTree({
+        sdk: { name: '@frihet/sdk', version: '999.0.0' },
+        cli: { name: 'frihet', version: '999.0.0' },
+      });
+      assert.doesNotThrow(() => assertTreeMatchesPin(pinned, tree));
+    });
+
+    it('rejects an unreadable tree', () => {
+      assert.throws(() => assertTreeMatchesPin(pinned, join(tempDir(), 'nope')), /cannot read /);
+    });
+
+    it('exits 3 via the CLI when the tree disagrees with the pin', () => {
+      const tree = makeTree({
+        sdk: { name: '@frihet/sdk', version: '1.2.0' },
+        cli: { name: 'frihet', version: '1.2.0' },
+      });
+      const file = writePins({ pins: [pinned] });
+      const run = runCli(['--pins', file, '--assert-tree', tree]);
+      assert.equal(run.status, 3);
+      assert.match(run.stderr, /is not the release the pin claims/);
+    });
+
+    it('--assert-tree against this very repo passes (it IS the selected release)', () => {
+      // The worktree's manifests are 1.3.0 and the canonical pin is the 1.3.0
+      // pin, so the claim and the evidence agree. This is the positive control:
+      // if it ever fails, either main moved past the newest verified pin without
+      // adding one, or the binding itself broke.
+      assert.deepEqual(
+        readPublishableManifests(join(REPO_ROOT, 'packages')).map((m) => `${m.name}@${m.version}`),
+        ['@frihet/sdk@1.3.0', 'frihet@1.3.0'],
+      );
+      const run = runCli(['--assert-tree', REPO_ROOT]);
+      assert.equal(run.status, 0);
+      assert.match(run.stderr, /matches the pin: @frihet\/sdk@1\.3\.0 \+ frihet@1\.3\.0/);
+    });
+
+    it('requires a path for --assert-tree', () => {
+      const run = runCli(['--assert-tree']);
+      assert.equal(run.status, 3);
+      assert.match(run.stderr, /--assert-tree requires a directory path/);
+    });
+  });
+
+  describe('2. duplicate JSON keys cannot smuggle order back in', () => {
+    // JSON.parse keeps the LAST duplicate, so pin B below parsed to 3.0.0 and beat
+    // pin A — and swapping the two duplicate literals flipped the outcome. Order
+    // dependence through a channel the schema checks never see.
+    const duplicateKeyFile = (first, second) =>
+      writePins(
+        `{\n  "pins": [\n    {\n      "commit": "${'a'.repeat(40)}",\n      "status": "verified",\n` +
+          `      "verifiedAt": "2026-08-30",\n      "packages": {\n        "@frihet/sdk": "2.0.0",\n` +
+          `        "frihet": "2.0.0"\n      }\n    },\n    {\n      "commit": "${'b'.repeat(40)}",\n` +
+          `      "status": "verified",\n      "verifiedAt": "2026-08-30",\n      "packages": {\n` +
+          `        "@frihet/sdk": "${first}",\n        "@frihet/sdk": "${second}",\n` +
+          `        "frihet": "3.0.0"\n      }\n    }\n  ]\n}\n`,
+      );
+
+    it('exits 3 on a duplicate package key, in either order', () => {
+      for (const [first, second] of [['1.0.0', '3.0.0'], ['3.0.0', '1.0.0']]) {
+        const run = runCli(['--pins', duplicateKeyFile(first, second)]);
+        assert.equal(run.status, 3, `order ${first}/${second}`);
+        assert.match(run.stderr, /is not in canonical JSON form/);
+      }
+    });
+
+    it('exits 3 on a duplicate top-level key', () => {
+      const file = writePins(
+        `{\n  "commit": "x",\n  "commit": "y",\n  "pins": [\n    {\n      "commit": "${'a'.repeat(40)}",\n` +
+          `      "status": "verified",\n      "verifiedAt": "2026-08-30",\n      "packages": {\n` +
+          `        "@frihet/sdk": "1.3.0",\n        "frihet": "1.3.0"\n      }\n    }\n  ]\n}\n`,
+      );
+      const run = runCli(['--pins', file]);
+      assert.equal(run.status, 3);
+      assert.match(run.stderr, /is not in canonical JSON form/);
+    });
+
+    it('exits 3 on tab indentation or trailing whitespace, and names the fix', () => {
+      const doc = { pins: [pin(COMMIT_A, '1.3.0', '1.3.0')] };
+      for (const raw of [
+        JSON.stringify(doc, null, '\t') + '\n',
+        JSON.stringify(doc, null, 2),
+        `${JSON.stringify(doc, null, 2)}\n\n`,
+        ` ${JSON.stringify(doc, null, 2)}\n`,
+      ]) {
+        const run = runCli(['--pins', writePins(raw)]);
+        assert.equal(run.status, 3);
+        assert.match(run.stderr, /is not in canonical JSON form/);
+        // The message must tell the user how to fix it, not just that it is wrong.
+        assert.match(run.stderr, /Rewrite it with: node -e/);
+      }
+    });
+
+    it('accepts the repo\'s real pins file, which is canonical', () => {
+      const raw = readFileSync(REAL_PINS, 'utf8');
+      assert.equal(raw, `${JSON.stringify(JSON.parse(raw), null, 2)}\n`);
+      assert.equal(runCli().status, 0);
+    });
+  });
+
+  describe('3. npm package-name grammar matches validate-npm-package-name', () => {
+    it('rejects names the hand-rolled regex wrongly accepted', () => {
+      for (const [name, reason] of [
+        ['-pkg', /cannot start with a hyphen/],
+        ['~pkg', /special characters/],
+        ['node_modules', /node_modules is not a valid package name/],
+        ['favicon.ico', /favicon\.ico is not a valid package name/],
+      ]) {
+        assert.match(npmPackageNameError(name), reason, name);
+        rejects(
+          { pins: [{ commit: 'a'.repeat(40), status: 'verified', verifiedAt: '2026-08-30', packages: { [name]: '1.0.0' } }] },
+          /is not a valid npm package name/,
+          [name],
+        );
+      }
+    });
+
+    it('accepts scoped names the hand-rolled regex wrongly rejected', () => {
+      for (const name of ['@scope/_pkg', '@_scope/pkg', '@frihet/sdk', 'frihet', 'a', 'a-b.c_d', '@a/b']) {
+        assert.equal(npmPackageNameError(name), null, name);
+      }
+    });
+
+    it('still rejects the round-2 cases (no regression from the rewrite)', () => {
+      for (const [name, reason] of [
+        ['.hidden', /cannot start with a period/],
+        ['_leading', /cannot start with an underscore/],
+        ['Frihet', /capital letters/],
+        ['@Frihet/sdk', /capital letters/],
+        ['frihet sdk', /URL-friendly/],
+        ['x\ncommit=y', /URL-friendly/],
+        ['x\rcommit=y', /URL-friendly/],
+        [' frihet', /leading or trailing spaces/],
+        ['frihet ', /leading or trailing spaces/],
+        ['', /length must be greater than zero/],
+        ['@scope/.hidden', /cannot start with a period/],
+      ]) {
+        assert.match(npmPackageNameError(name), reason, JSON.stringify(name));
+      }
+      assert.match(npmPackageNameError(42), /must be a string/);
+    });
+  });
+
+  describe('4. runs on Node 18 (engines.node >= 18)', () => {
+    it('resolves paths without import.meta.dirname', () => {
+      // import.meta.dirname landed in 20.11; on 18 it is undefined and the module
+      // threw at import time, exiting 1 instead of this file's fail-closed 3.
+      const source = readFileSync(RESOLVER, 'utf8');
+      assert.doesNotMatch(
+        source.replace(/^\s*\/\/.*$/gm, ''),
+        /import\.meta\.dirname/,
+        'resolver must not use import.meta.dirname outside comments',
+      );
+      assert.match(source, /fileURLToPath\(new URL\('\.\.', import\.meta\.url\)\)/);
     });
   });
 });

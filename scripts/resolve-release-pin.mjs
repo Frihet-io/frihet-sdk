@@ -22,6 +22,15 @@
  * run with `--expect-in-sync` against the resolved commit. A green here means
  * "the newest verified pin is unambiguous", nothing about bytes.
  *
+ * The pinned package set is checked against the packages this repo actually
+ * publishes, discovered from the filesystem the same way the detector discovers
+ * them. A pin is only evidence about packages the gate goes on to compare, so a
+ * pin naming something else — or omitting one of ours — is not weaker evidence,
+ * it is evidence about a different question. Consequence worth knowing: adding a
+ * new publishable package makes every existing pin fail closed until a pin
+ * covering it is verified. That is the intended direction — you cannot inherit a
+ * reproducibility claim for a package nobody has ever checked.
+ *
  * Validation is strict on verified pins only, because only a verified pin can be
  * selected. A malformed `pending` entry is ignored while it is pending and fails
  * closed the moment someone flips it to `verified` — the safe direction. `status`
@@ -34,12 +43,13 @@
  *   3  fail-closed — no justified selection. Never silently picks something.
  */
 
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..');
 const DEFAULT_PINS = join(REPO_ROOT, 'scripts', 'publish-pins.json');
+const PACKAGES_DIR = join(REPO_ROOT, 'packages');
 
 const COMMIT_RE = /^[0-9a-f]{40}$/;
 // Strict MAJOR.MINOR.PATCH. No prerelease, no build metadata, no leading zeros:
@@ -47,6 +57,12 @@ const COMMIT_RE = /^[0-9a-f]{40}$/;
 // on its face, and "01.2.0" is not the string npm published.
 const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// npm's published name grammar. Beyond correctness this is a security boundary:
+// package names reach `$GITHUB_OUTPUT`, and a name containing a newline could
+// append a second `commit=<sha>` line that the runner's parser would accept as
+// the winning assignment — steering the pinned checkout to an arbitrary commit.
+const PACKAGE_NAME_RE = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
+const MAX_PACKAGE_NAME_LENGTH = 214;
 const KNOWN_STATUSES = new Set(['verified', 'pending']);
 
 /** Thrown for every rejected document so the CLI can map it to exit 3. */
@@ -65,12 +81,20 @@ function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Numeric semver compare (1.10.0 > 1.9.0 — lexicographic would get this wrong). */
+/**
+ * Numeric semver compare over BigInt components.
+ *
+ * Not Number: `Number('9007199254740993') === Number('9007199254740992')` is
+ * true past 2^53, which would collapse two distinct versions into a tie and let
+ * a pair of crossing pins resolve to a "maximum" that is not one.
+ */
 function compareVersions(a, b) {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
+  const pa = a.split('.');
+  const pb = b.split('.');
   for (let i = 0; i < 3; i += 1) {
-    if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1;
+    const na = BigInt(pa[i]);
+    const nb = BigInt(pb[i]);
+    if (na !== nb) return na < nb ? -1 : 1;
   }
   return 0;
 }
@@ -83,7 +107,44 @@ function isRealIsoDate(value) {
   return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
 }
 
-function validateVerifiedPin(pin, index) {
+/**
+ * Discover the packages this repo publishes, from the filesystem rather than a
+ * hardcoded list, by the same rule as `scripts/check-publish-drift.mjs#discoverPackages`
+ * (every non-private package manifest one level under `packages/`).
+ *
+ * Note the two run against different trees: this resolver reads the current
+ * checkout, while the detector reads the pinned tree it rebuilds. That is why a
+ * divergence fails closed rather than being reconciled — the resolver cannot see
+ * the pinned tree yet, and a pin covering a different package set is evidence
+ * about a different question.
+ *
+ * @returns {string[]} sorted package names
+ */
+export function discoverPublishablePackages(packagesDir = PACKAGES_DIR) {
+  let dirs;
+  try {
+    dirs = readdirSync(packagesDir, { withFileTypes: true }).filter((d) => d.isDirectory());
+  } catch (err) {
+    reject(`cannot read ${packagesDir}: ${err.message}`);
+  }
+  const names = [];
+  for (const d of dirs) {
+    const manifestPath = join(packagesDir, d.name, 'package.json');
+    let manifest;
+    try {
+      manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    } catch {
+      continue;
+    }
+    if (manifest.private === true) continue;
+    if (!manifest.name) reject(`${manifestPath} is publishable but has no name`);
+    names.push(manifest.name);
+  }
+  if (names.length === 0) reject(`discovered zero publishable packages under ${packagesDir}`);
+  return names.sort();
+}
+
+function validateVerifiedPin(pin, index, expectedPackages) {
   const at = `pins[${index}]`;
 
   if (typeof pin.commit !== 'string' || !COMMIT_RE.test(pin.commit)) {
@@ -100,7 +161,9 @@ function validateVerifiedPin(pin, index) {
     reject(`${at} (${pin.commit}): packages is empty — a pin that pins nothing cannot be authority`);
   }
   for (const name of names) {
-    if (name.length === 0) reject(`${at} (${pin.commit}): packages has an empty package name`);
+    if (name.length > MAX_PACKAGE_NAME_LENGTH || !PACKAGE_NAME_RE.test(name)) {
+      reject(`${at} (${pin.commit}): ${JSON.stringify(name)} is not a valid npm package name`);
+    }
     const version = pin.packages[name];
     if (typeof version !== 'string') {
       reject(`${at} (${pin.commit}): version for ${name} must be a string (got ${JSON.stringify(version)})`);
@@ -109,6 +172,16 @@ function validateVerifiedPin(pin, index) {
       reject(`${at} (${pin.commit}): version for ${name} must be strict MAJOR.MINOR.PATCH (got ${JSON.stringify(version)})`);
     }
   }
+
+  // Absolute, not relative to a sibling pin: a pin is evidence only about the
+  // packages the detector goes on to compare.
+  const sorted = [...names].sort();
+  if (sorted.length !== expectedPackages.length || sorted.some((n, i) => n !== expectedPackages[i])) {
+    reject(
+      `${at} (${pin.commit}): pins [${sorted.join(', ')}] but this repo publishes [${expectedPackages.join(', ')}] — ` +
+        'a verified pin must cover exactly the packages the drift gate compares',
+    );
+  }
 }
 
 /**
@@ -116,9 +189,18 @@ function validateVerifiedPin(pin, index) {
  * across every pinned package. Pure — throws PinResolutionError, never exits.
  *
  * @param {unknown} doc parsed publish-pins.json
+ * @param {{expectedPackages: string[]}} options the repo's publishable package
+ *   names. Required: defaulting it would make the package-set check skippable,
+ *   which is the weaker mode this resolver refuses to have.
  * @returns {{pin: object, verifiedCount: number, pendingCount: number}}
  */
-export function selectCanonicalPin(doc) {
+export function selectCanonicalPin(doc, options = {}) {
+  const { expectedPackages } = options;
+  if (!Array.isArray(expectedPackages) || expectedPackages.length === 0 || expectedPackages.some((n) => typeof n !== 'string')) {
+    reject('expectedPackages must be a non-empty array of package names — refusing to select without knowing what this repo publishes');
+  }
+  const expected = [...expectedPackages].sort();
+
   if (!isPlainObject(doc)) reject('publish-pins document must be a JSON object');
   if (!Array.isArray(doc.pins)) reject('publish-pins.pins must be an array');
   if (doc.pins.length === 0) reject('publish-pins.pins is empty — there is no release to re-prove');
@@ -138,7 +220,7 @@ export function selectCanonicalPin(doc) {
       pendingCount += 1;
       return;
     }
-    validateVerifiedPin(pin, index);
+    validateVerifiedPin(pin, index, expected);
     verified.push({ pin, index });
   });
 
@@ -146,23 +228,19 @@ export function selectCanonicalPin(doc) {
     reject(`no pin has status "verified" (${doc.pins.length} pin(s), ${pendingCount} pending) — nothing is proven reproducible`);
   }
 
-  // Every verified pin must cover the same package set. Otherwise a pin that
-  // silently dropped a package could "dominate" on the packages it kept.
-  const reference = verified[0];
-  const referenceNames = Object.keys(reference.pin.packages).sort();
-  for (const { pin, index } of verified.slice(1)) {
-    const names = Object.keys(pin.packages).sort();
-    if (names.length !== referenceNames.length || names.some((n, i) => n !== referenceNames[i])) {
-      reject(
-        `verified pins disagree on which packages they pin: pins[${reference.index}] has [${referenceNames.join(', ')}] ` +
-          `but pins[${index}] has [${names.join(', ')}]`,
-      );
+  // One deterministic commit produces one set of version strings. Two verified
+  // pins on the same commit is contradictory evidence, not a tie to break.
+  const byCommit = new Map();
+  for (const { pin, index } of verified) {
+    if (byCommit.has(pin.commit)) {
+      reject(`verified pins[${byCommit.get(pin.commit)}] and pins[${index}] share commit ${pin.commit} — one commit cannot have produced two releases`);
     }
+    byCommit.set(pin.commit, index);
   }
 
   // Two verified pins claiming the same version of the same package means the
   // evidence base contradicts itself: one commit produced those bytes, not two.
-  for (const name of referenceNames) {
+  for (const name of expected) {
     const seen = new Map();
     for (const { pin, index } of verified) {
       const version = pin.packages[name];
@@ -175,12 +253,12 @@ export function selectCanonicalPin(doc) {
 
   // Total maximum: dominates every other verified pin on every package.
   const dominators = verified.filter(({ pin }) =>
-    verified.every(({ pin: other }) => referenceNames.every((name) => compareVersions(pin.packages[name], other.packages[name]) >= 0)),
+    verified.every(({ pin: other }) => expected.every((name) => compareVersions(pin.packages[name], other.packages[name]) >= 0)),
   );
 
   if (dominators.length !== 1) {
     const described = verified
-      .map(({ pin, index }) => `pins[${index}]=${referenceNames.map((n) => `${n}@${pin.packages[n]}`).join('+')}`)
+      .map(({ pin, index }) => `pins[${index}]=${expected.map((n) => `${n}@${pin.packages[n]}`).join('+')}`)
       .join(', ');
     reject(`no single newest verified pin: versions cross between pins, so "latest" is undefined (${described})`);
   }
@@ -209,6 +287,19 @@ function failClosed(reason) {
   process.exit(3);
 }
 
+/**
+ * Belt and braces over the package-name grammar: nothing with a line break ever
+ * reaches `$GITHUB_OUTPUT`, where a second line would be parsed as a further
+ * `key=value` assignment and could override the commit the workflow checks out.
+ * Exported so the guard is tested directly rather than only through inputs the
+ * name grammar already rejects.
+ */
+export function assertSingleLine(key, value) {
+  if (/[\n\r]/.test(value)) {
+    reject(`refusing to write a multi-line value for GITHUB_OUTPUT key "${key}": ${JSON.stringify(value)}`);
+  }
+}
+
 function parseArgs(argv) {
   const options = { pinsPath: DEFAULT_PINS, githubOutput: false };
   for (let i = 0; i < argv.length; i += 1) {
@@ -234,16 +325,16 @@ function main(argv) {
   const options = parseArgs(argv);
 
   let selection;
+  let expectedPackages;
   try {
-    selection = selectCanonicalPin(loadPinsDocument(options.pinsPath));
+    expectedPackages = discoverPublishablePackages();
+    selection = selectCanonicalPin(loadPinsDocument(options.pinsPath), { expectedPackages });
   } catch (err) {
     failClosed(err instanceof PinResolutionError ? err.message : (err?.stack ?? String(err)));
   }
 
   const { pin, verifiedCount, pendingCount } = selection;
-  const versions = Object.keys(pin.packages)
-    .sort()
-    .map((name) => `${name}@${pin.packages[name]}`);
+  const versions = expectedPackages.map((name) => `${name}@${pin.packages[name]}`);
 
   console.error(
     `[release-pin] selected ${versions.join(' + ')} → ${pin.commit.slice(0, 7)}… ` +
@@ -255,10 +346,12 @@ function main(argv) {
     if (!target) {
       failClosed('--github-output was requested but GITHUB_OUTPUT is not set — refusing to drop the resolved commit silently');
     }
+    const outputs = { commit: pin.commit, versions: versions.join(',') };
     try {
-      appendFileSync(target, `commit=${pin.commit}\nversions=${versions.join(',')}\n`);
+      for (const [key, value] of Object.entries(outputs)) assertSingleLine(key, value);
+      appendFileSync(target, Object.entries(outputs).map(([k, v]) => `${k}=${v}\n`).join(''));
     } catch (err) {
-      failClosed(`cannot append to GITHUB_OUTPUT (${target}): ${err.message}`);
+      failClosed(err instanceof PinResolutionError ? err.message : `cannot append to GITHUB_OUTPUT (${target}): ${err.message}`);
     }
   }
 

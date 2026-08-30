@@ -18,7 +18,7 @@ import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { selectCanonicalPin } from '../resolve-release-pin.mjs';
+import { assertSingleLine, discoverPublishablePackages, selectCanonicalPin } from '../resolve-release-pin.mjs';
 
 const RESOLVER = resolve(import.meta.dirname, '..', 'resolve-release-pin.mjs');
 const REAL_PINS = resolve(import.meta.dirname, '..', 'publish-pins.json');
@@ -66,6 +66,13 @@ function runCli(args = [], env = {}) {
   }
 }
 
+/**
+ * The packages this repo actually publishes. selectCanonicalPin requires them —
+ * there is no default, so the package-set check cannot be skipped by omission.
+ */
+const EXPECTED_PACKAGES = ['@frihet/sdk', 'frihet'];
+const select = (doc, expectedPackages = EXPECTED_PACKAGES) => selectCanonicalPin(doc, { expectedPackages });
+
 const COMMIT_A = 'a'.repeat(40);
 const COMMIT_B = 'b'.repeat(40);
 const COMMIT_C = 'c'.repeat(40);
@@ -83,7 +90,7 @@ function pin(commit, sdk, cli, extra = {}) {
 describe('selectCanonicalPin — selection', () => {
   it('selects the newest verified pin among several', () => {
     const doc = { pins: [pin(COMMIT_A, '1.2.0', '1.2.0'), pin(COMMIT_B, '1.3.0', '1.3.0')] };
-    const { pin: selected, verifiedCount, pendingCount } = selectCanonicalPin(doc);
+    const { pin: selected, verifiedCount, pendingCount } = select(doc);
     assert.equal(selected.commit, COMMIT_B);
     assert.equal(verifiedCount, 2);
     assert.equal(pendingCount, 0);
@@ -91,10 +98,10 @@ describe('selectCanonicalPin — selection', () => {
 
   it('selects the newest even when it is NOT pins[0] (the accidental-authority bug)', () => {
     const doc = { pins: [pin(COMMIT_B, '1.3.0', '1.3.0'), pin(COMMIT_A, '1.2.0', '1.2.0')] };
-    assert.equal(selectCanonicalPin(doc).pin.commit, COMMIT_B);
+    assert.equal(select(doc).pin.commit, COMMIT_B);
 
     const reordered = { pins: [pin(COMMIT_A, '1.2.0', '1.2.0'), pin(COMMIT_B, '1.3.0', '1.3.0')] };
-    assert.equal(selectCanonicalPin(reordered).pin.commit, COMMIT_B);
+    assert.equal(select(reordered).pin.commit, COMMIT_B);
   });
 
   it('is order-independent across every permutation of three verified pins', () => {
@@ -109,23 +116,23 @@ describe('selectCanonicalPin — selection', () => {
     ];
     for (const order of permutations) {
       const doc = { pins: order.map((i) => pins[i]) };
-      assert.equal(selectCanonicalPin(doc).pin.commit, COMMIT_C, `order ${order.join('')}`);
+      assert.equal(select(doc).pin.commit, COMMIT_C, `order ${order.join('')}`);
     }
   });
 
   it('compares versions numerically, not lexicographically (1.10.0 > 1.9.0)', () => {
     const doc = { pins: [pin(COMMIT_A, '1.10.0', '1.10.0'), pin(COMMIT_B, '1.9.0', '1.9.0')] };
-    assert.equal(selectCanonicalPin(doc).pin.commit, COMMIT_A);
+    assert.equal(select(doc).pin.commit, COMMIT_A);
   });
 
   it('compares patch numerically too (2.0.10 > 2.0.9)', () => {
     const doc = { pins: [pin(COMMIT_A, '2.0.9', '2.0.9'), pin(COMMIT_B, '2.0.10', '2.0.10')] };
-    assert.equal(selectCanonicalPin(doc).pin.commit, COMMIT_B);
+    assert.equal(select(doc).pin.commit, COMMIT_B);
   });
 
   it('accepts a single verified pin', () => {
     const doc = { pins: [pin(COMMIT_A, '1.2.0', '1.2.0')] };
-    assert.equal(selectCanonicalPin(doc).pin.commit, COMMIT_A);
+    assert.equal(select(doc).pin.commit, COMMIT_A);
   });
 
   it('ignores a pending pin with a HIGHER version — it cannot hijack the selection', () => {
@@ -136,7 +143,7 @@ describe('selectCanonicalPin — selection', () => {
         { commit: COMMIT_C, status: 'pending', packages: { '@frihet/sdk': '1.4.0', frihet: '1.4.0' } },
       ],
     };
-    const { pin: selected, verifiedCount, pendingCount } = selectCanonicalPin(doc);
+    const { pin: selected, verifiedCount, pendingCount } = select(doc);
     assert.equal(selected.commit, COMMIT_B);
     assert.equal(verifiedCount, 2);
     assert.equal(pendingCount, 1);
@@ -148,7 +155,7 @@ describe('selectCanonicalPin — selection', () => {
     const doc = {
       pins: [pin(COMMIT_B, '1.2.0', '1.1.0'), pin(COMMIT_C, '1.1.0', '1.2.0'), pin(COMMIT_A, '1.3.0', '1.3.0')],
     };
-    assert.equal(selectCanonicalPin(doc).pin.commit, COMMIT_A);
+    assert.equal(select(doc).pin.commit, COMMIT_A);
   });
 
   it('ignores a pending pin even when it is malformed — pending must never break selection', () => {
@@ -158,12 +165,12 @@ describe('selectCanonicalPin — selection', () => {
         { commit: 'NOT-A-SHA', status: 'pending', packages: { '@frihet/sdk': 'nonsense' } },
       ],
     };
-    assert.equal(selectCanonicalPin(doc).pin.commit, COMMIT_B);
+    assert.equal(select(doc).pin.commit, COMMIT_B);
   });
 });
 
 describe('selectCanonicalPin — fail-closed', () => {
-  const rejects = (doc, match) => assert.throws(() => selectCanonicalPin(doc), match);
+  const rejects = (doc, match) => assert.throws(() => select(doc), match);
 
   it('rejects a document with no verified pin', () => {
     rejects(
@@ -249,17 +256,17 @@ describe('selectCanonicalPin — fail-closed', () => {
     );
   });
 
-  it('rejects verified pins whose package sets differ (a dropped package must not look newer)', () => {
+  it('rejects a verified pin whose package set is not the repo\'s (dropped or extra)', () => {
     const wider = {
       commit: COMMIT_B,
       status: 'verified',
       verifiedAt: '2026-08-30',
       packages: { '@frihet/sdk': '1.4.0', frihet: '1.4.0', '@frihet/extra': '1.0.0' },
     };
-    rejects({ pins: [pin(COMMIT_A, '1.3.0', '1.3.0'), wider] }, /disagree on which packages they pin/);
+    rejects({ pins: [pin(COMMIT_A, '1.3.0', '1.3.0'), wider] }, /must cover exactly the packages the drift gate compares/);
 
     const narrower = { commit: COMMIT_C, status: 'verified', verifiedAt: '2026-08-30', packages: { '@frihet/sdk': '9.0.0' } };
-    rejects({ pins: [pin(COMMIT_A, '1.3.0', '1.3.0'), narrower] }, /disagree on which packages they pin/);
+    rejects({ pins: [pin(COMMIT_A, '1.3.0', '1.3.0'), narrower] }, /must cover exactly the packages the drift gate compares/);
   });
 
   it('rejects crossing versions between two verified pins (no total maximum)', () => {
@@ -273,7 +280,7 @@ describe('selectCanonicalPin — fail-closed', () => {
     // Backs the leniency claim in resolve-release-pin.mjs: pending entries are only
     // ignored *while pending*. Promotion re-enters strict validation.
     const broken = { commit: 'NOT-A-SHA', status: 'pending', packages: { '@frihet/sdk': '9.0.0', frihet: '9.0.0' } };
-    assert.equal(selectCanonicalPin({ pins: [pin(COMMIT_B, '1.3.0', '1.3.0'), broken] }).pin.commit, COMMIT_B);
+    assert.equal(select({ pins: [pin(COMMIT_B, '1.3.0', '1.3.0'), broken] }).pin.commit, COMMIT_B);
     rejects({ pins: [pin(COMMIT_B, '1.3.0', '1.3.0'), { ...broken, status: 'verified', verifiedAt: '2026-08-30' }] }, /40 lowercase hex/);
   });
 
@@ -290,7 +297,7 @@ describe('selectCanonicalPin — fail-closed', () => {
   });
 
   it('rejects an empty package name', () => {
-    rejects({ pins: [{ ...pin(COMMIT_A, '1.3.0', '1.3.0'), packages: { '': '1.3.0' } }] }, /empty package name/);
+    rejects({ pins: [{ ...pin(COMMIT_A, '1.3.0', '1.3.0'), packages: { '': '1.3.0' } }] }, /is not a valid npm package name/);
   });
 });
 
@@ -299,7 +306,7 @@ describe('CLI', () => {
     const doc = JSON.parse(readFileSync(REAL_PINS, 'utf8'));
     assert.equal(doc.pins[0].packages['@frihet/sdk'], '1.2.0', 'precondition: pins[0] is still the older release');
 
-    const { pin: selected } = selectCanonicalPin(doc);
+    const { pin: selected } = select(doc);
     assert.equal(selected.commit, '0cbf003c1926fadaea0d343294417812ec3be133');
     assert.deepEqual(selected.packages, { '@frihet/sdk': '1.3.0', frihet: '1.3.0' });
 
@@ -383,5 +390,167 @@ describe('CLI', () => {
     assert.equal(run.status, 0);
     assert.equal(JSON.parse(run.stdout).commit, COMMIT_B);
     assert.match(run.stderr, /2 verified, 1 pending ignored/);
+  });
+});
+
+/**
+ * Round 2 — pinning tests for the four findings raised by the cross-model
+ * adversarial review. Each `it` below carries the exact input that was
+ * reproduced exiting 0 (or selecting the wrong pin) before the fix.
+ */
+describe('Round 2 — cross-model review findings', () => {
+  const rejects = (doc, match, expected = EXPECTED_PACKAGES) =>
+    assert.throws(() => selectCanonicalPin(doc, { expectedPackages: expected }), match);
+
+  describe('1. GITHUB_OUTPUT injection via package name', () => {
+    // The reproduced attack: this name carries newlines, so `versions=<names>`
+    // used to append a SECOND `commit=bbbb…` line. The runner's parser takes the
+    // last assignment, so steps.pin.outputs.commit became the injected SHA and
+    // the workflow would check out an attacker-chosen commit.
+    const INJECTED = 'x\ncommit=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nx=';
+    const injectionDoc = {
+      pins: [
+        {
+          commit: 'a'.repeat(40),
+          status: 'verified',
+          verifiedAt: '2026-08-30',
+          packages: { [INJECTED]: '1.0.0' },
+        },
+      ],
+    };
+
+    it('rejects the injecting package name (pure)', () => {
+      rejects(injectionDoc, /is not a valid npm package name/, [INJECTED]);
+    });
+
+    it('exits 3 and writes NO commit line to $GITHUB_OUTPUT (CLI, end to end)', () => {
+      const file = writePins(injectionDoc);
+      const outFile = join(tempDir(), 'gh-output');
+      writeFileSync(outFile, '');
+      const run = runCli(['--pins', file, '--github-output'], { GITHUB_OUTPUT: outFile });
+      assert.equal(run.status, 3);
+      assert.match(run.stderr, /is not a valid npm package name/);
+      assert.equal(readFileSync(outFile, 'utf8'), '', 'nothing may reach GITHUB_OUTPUT on a fail-closed run');
+      assert.doesNotMatch(readFileSync(outFile, 'utf8'), /commit=b/);
+    });
+
+    it('rejects carriage returns, uppercase and spaces in package names', () => {
+      for (const name of ['x\rcommit=y', 'Frihet', '@Frihet/sdk', 'frihet sdk', 'x\ncommit=y', '.hidden', '_leading']) {
+        rejects(
+          { pins: [{ commit: 'a'.repeat(40), status: 'verified', verifiedAt: '2026-08-30', packages: { [name]: '1.0.0' } }] },
+          /is not a valid npm package name/,
+          [name],
+        );
+      }
+    });
+
+    it('rejects a package name longer than npm allows (214 chars)', () => {
+      const long = `a${'b'.repeat(214)}`;
+      rejects(
+        { pins: [{ commit: 'a'.repeat(40), status: 'verified', verifiedAt: '2026-08-30', packages: { [long]: '1.0.0' } }] },
+        /is not a valid npm package name/,
+        [long],
+      );
+    });
+
+    it('assertSingleLine itself refuses multi-line values (belt and braces, tested directly)', () => {
+      assert.throws(() => assertSingleLine('commit', 'aaa\ncommit=bbb'), /refusing to write a multi-line value/);
+      assert.throws(() => assertSingleLine('versions', 'a\rb'), /refusing to write a multi-line value/);
+      assert.doesNotThrow(() => assertSingleLine('commit', 'a'.repeat(40)));
+    });
+  });
+
+  describe('2. package set must equal what this repo publishes', () => {
+    it('discovers the repo\'s real publishable packages from the filesystem', () => {
+      assert.deepEqual(discoverPublishablePackages(), ['@frihet/sdk', 'frihet']);
+    });
+
+    it('rejects a lone pin naming a package this repo does not publish', () => {
+      // Reproduced exiting 0 and reporting `bogus@9.0.0` as the canonical release.
+      const doc = {
+        pins: [{ commit: 'a'.repeat(40), status: 'verified', verifiedAt: '2026-08-30', packages: { bogus: '9.0.0' } }],
+      };
+      rejects(doc, /pins \[bogus\] but this repo publishes \[@frihet\/sdk, frihet\]/);
+
+      const run = runCli(['--pins', writePins(doc)]);
+      assert.equal(run.status, 3);
+      assert.match(run.stderr, /must cover exactly the packages the drift gate compares/);
+    });
+
+    it('rejects a pin missing one of the published packages', () => {
+      const doc = {
+        pins: [{ commit: 'a'.repeat(40), status: 'verified', verifiedAt: '2026-08-30', packages: { '@frihet/sdk': '1.3.0' } }],
+      };
+      rejects(doc, /pins \[@frihet\/sdk\] but this repo publishes/);
+    });
+
+    it('rejects a pin carrying an extra package', () => {
+      const doc = {
+        pins: [
+          {
+            commit: 'a'.repeat(40),
+            status: 'verified',
+            verifiedAt: '2026-08-30',
+            packages: { '@frihet/sdk': '1.3.0', frihet: '1.3.0', '@frihet/extra': '1.0.0' },
+          },
+        ],
+      };
+      rejects(doc, /but this repo publishes \[@frihet\/sdk, frihet\]/);
+    });
+
+    it('refuses to select at all without expectedPackages — no skippable weaker mode', () => {
+      const doc = { pins: [pin(COMMIT_A, '1.3.0', '1.3.0')] };
+      assert.throws(() => selectCanonicalPin(doc), /expectedPackages must be a non-empty array/);
+      assert.throws(() => selectCanonicalPin(doc, { expectedPackages: [] }), /expectedPackages must be a non-empty array/);
+      assert.throws(() => selectCanonicalPin(doc, { expectedPackages: [42] }), /expectedPackages must be a non-empty array/);
+    });
+  });
+
+  describe('3. version components compare as BigInt, not Number', () => {
+    // Number('9007199254740993') === Number('9007199254740992') past 2^53, which
+    // collapsed these two CROSSING pins into a false "maximum" and exited 0.
+    const crossingBeyond2to53 = {
+      pins: [
+        {
+          commit: 'a'.repeat(40),
+          status: 'verified',
+          verifiedAt: '2026-08-30',
+          packages: { '@frihet/sdk': '9007199254740993.0.0', frihet: '1.0.0' },
+        },
+        {
+          commit: 'b'.repeat(40),
+          status: 'verified',
+          verifiedAt: '2026-08-30',
+          packages: { '@frihet/sdk': '9007199254740992.0.0', frihet: '2.0.0' },
+        },
+      ],
+    };
+
+    it('exits 3 on pins that cross only beyond Number precision', () => {
+      rejects(crossingBeyond2to53, /versions cross between pins/);
+      const run = runCli(['--pins', writePins(crossingBeyond2to53)]);
+      assert.equal(run.status, 3);
+      assert.match(run.stderr, /versions cross between pins/);
+    });
+
+    it('still orders huge versions correctly when they do not cross', () => {
+      const doc = {
+        pins: [
+          pin(COMMIT_A, '9007199254740992.0.0', '9007199254740992.0.0'),
+          pin(COMMIT_B, '9007199254740993.0.0', '9007199254740993.0.0'),
+        ],
+      };
+      assert.equal(select(doc).pin.commit, COMMIT_B);
+    });
+  });
+
+  describe('4. two verified pins may not share a commit', () => {
+    it('exits 3 when the same commit claims two different releases', () => {
+      const doc = { pins: [pin(COMMIT_A, '1.2.0', '1.2.0'), pin(COMMIT_A, '1.3.0', '1.3.0')] };
+      rejects(doc, /share commit a{40} — one commit cannot have produced two releases/);
+      const run = runCli(['--pins', writePins(doc)]);
+      assert.equal(run.status, 3);
+      assert.match(run.stderr, /one commit cannot have produced two releases/);
+    });
   });
 });

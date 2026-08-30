@@ -23,7 +23,7 @@ export const loginCommand = new Command('login')
 
     if (!apiKey) {
       console.error(bold('Frihet CLI Login'));
-      console.error(dim('Get your API key at https://app.frihet.io/settings/security\n'));
+      console.error(dim('Get your API key at https://app.frihet.io/settings/api\n'));
       apiKey = await prompt('API key: ');
     }
 

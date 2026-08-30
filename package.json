@@ -5,6 +5,7 @@
     "clean": "pnpm -r clean",
     "typecheck": "pnpm -r typecheck",
     "test:contract": "vitest run --config vitest.contract.config.ts",
+    "test:scripts": "node --test scripts/__tests__/*.test.mjs",
     "check:publish-drift": "node scripts/check-publish-drift.mjs"
   },
   "devDependencies": {

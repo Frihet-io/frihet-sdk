@@ -1,7 +1,7 @@
 {
   "name": "frihet",
   "version": "1.2.1",
-  "description": "Frihet CLI — manage your business from the terminal",
+  "description": "Frihet CLI \u2014 manage your business from the terminal",
   "type": "module",
   "bin": {
     "frihet": "./dist/index.js"
@@ -17,7 +17,8 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/index.ts",
-    "prepublishOnly": "pnpm run build"
+    "prepublishOnly": "pnpm run build",
+    "test": "vitest run"
   },
   "keywords": [
     "frihet",
@@ -58,7 +59,8 @@
     "@types/node": "^25.5.0",
     "tsup": "^8.0.0",
     "tsx": "^4.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.0"
   },
   "engines": {
     "node": ">=18"

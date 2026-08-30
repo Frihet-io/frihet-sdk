@@ -34,6 +34,13 @@ jobs:
         if: matrix.node != 18
         run: pnpm --filter @frihet/sdk test
 
+      # Agent-facing CLI contract: the machine-readable credential failure, the
+      # settings URL that actually issues a key, and the guarantee that AGENTS.md
+      # only names SDK methods that exist.
+      - name: CLI agent-contract suite
+        if: matrix.node != 18
+        run: pnpm --filter frihet test
+
       - name: Node 18 runtime smoke (built bundle)
         if: matrix.node == 18
         run: node packages/sdk/scripts/smoke-dist.mjs

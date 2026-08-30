@@ -1,0 +1,20 @@
+{
+  "$comment": [
+    "Reproducibility pins: (published npm version) -> (commit whose build produces its exact dist bytes).",
+    "This is the evidence base for scripts/check-publish-drift.mjs. That detector's whole authority is",
+    "the claim 'this repo's dist output is byte-reproducible', because npm exposes no gitHead for these",
+    "packages. A claim the gate never re-tests is a phantom mechanism, so publish-drift.yml rebuilds a",
+    "pinned commit on every run and asserts --expect-in-sync before any drift verdict is trusted.",
+    "Add a new pin each time a version is published, in the release PR."
+  ],
+  "pins": [
+    {
+      "commit": "42f06cf5462a932a1473592d6b8cde82f59d64e1",
+      "note": "release(sdk): 1.2.0 to npm (#3) \u2014 verified 2026-08-26: rebuild matches both published tarballs byte-for-byte",
+      "packages": {
+        "@frihet/sdk": "1.2.0",
+        "frihet": "1.2.0"
+      }
+    }
+  ]
+}

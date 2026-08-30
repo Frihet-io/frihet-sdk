@@ -164,7 +164,13 @@ pnpm install --frozen-lockfile && pnpm build
 tar -xOzf release-artifacts/frihet-X.Y.Z.tgz package/package.json   # "@frihet/sdk": "X.Y.Z"
 
 # In a real TTY (npm 12 opens a browser for the passkey). SDK first, CLI after.
+# The --assert-absent gate is the same no-republish check the workflow runs; it
+# fails closed if the registry cannot be reached, so an outage cannot be mistaken
+# for "this version is free".
+node scripts/publish-readback.mjs --assert-absent --package @frihet/sdk --version X.Y.Z
 npx npm@12 publish ./release-artifacts/frihet-sdk-X.Y.Z.tgz --access public
+
+node scripts/publish-readback.mjs --assert-absent --package frihet --version X.Y.Z
 npx npm@12 publish ./release-artifacts/frihet-X.Y.Z.tgz --access public
 ```
 

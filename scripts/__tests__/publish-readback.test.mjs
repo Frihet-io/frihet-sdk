@@ -21,13 +21,15 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 
 import {
   assertAttestations,
+  assertManifestIdentity,
+  assertPackumentShape,
   assertVersionAbsent,
   assertExactDependencies,
   assertIntegrityMatchesLocal,
@@ -35,6 +37,7 @@ import {
   assertServedTarballMatches,
   assertVersionPresent,
   parseArgs,
+  readTarballManifest,
   sha512Integrity,
 } from '../publish-readback.mjs';
 
@@ -118,6 +121,24 @@ describe('parseArgs', () => {
     assert.throws(
       () => parseArgs([...base, '--expect-dependency', 'x=1.0.0']),
       /cannot be combined with --expect-dependency/
+    );
+  });
+
+  it('--assert-tarball-identity requires --tarball and refuses registry-only flags', () => {
+    const base = ['--package', 'frihet', '--version', '1.3.0', '--assert-tarball-identity'];
+    assert.throws(() => parseArgs(base), /--tarball is required/);
+    const o = parseArgs([...base, '--tarball', 'a.tgz']);
+    assert.equal(o.assertTarballIdentity, true);
+    assert.throws(
+      () => parseArgs([...base, '--tarball', 'a.tgz', '--require-attestations']),
+      /cannot be combined with --require-attestations/
+    );
+  });
+
+  it('--assert-absent and --assert-tarball-identity are mutually exclusive', () => {
+    assert.throws(
+      () => parseArgs(['--package', 'frihet', '--version', '1.3.0', '--assert-absent', '--assert-tarball-identity']),
+      /different modes/
     );
   });
 
@@ -289,7 +310,11 @@ describe('assertExactDependencies', () => {
 });
 
 describe('assertVersionAbsent', () => {
-  const doc = { versions: { '1.2.0': {}, '1.3.0': {} }, 'dist-tags': { latest: '1.3.0' } };
+  const doc = {
+    name: 'frihet',
+    versions: { '1.2.0': { version: '1.2.0' }, '1.3.0': { version: '1.3.0' } },
+    'dist-tags': { latest: '1.3.0' },
+  };
 
   it('passes when the version has never been published', () => {
     assert.match(assertVersionAbsent(doc, 'frihet', '9.9.9'), /^ok frihet@9\.9\.9 is not on the registry \(2 version\(s\)/);
@@ -300,13 +325,100 @@ describe('assertVersionAbsent', () => {
   });
 
   it('refuses to report absence from a malformed document instead of guessing', () => {
-    assert.throws(() => assertVersionAbsent({}, 'frihet', '9.9.9'), /has no "versions" object/);
-    assert.throws(() => assertVersionAbsent(null, 'frihet', '9.9.9'), /has no "versions" object/);
-    assert.throws(() => assertVersionAbsent({ versions: null }, 'frihet', '9.9.9'), /has no "versions" object/);
+    assert.throws(() => assertVersionAbsent({ name: 'frihet' }, 'frihet', '9.9.9'), /"versions" is/);
+    assert.throws(() => assertVersionAbsent(null, 'frihet', '9.9.9'), /is not an object/);
+    assert.throws(() => assertVersionAbsent({ name: 'frihet', versions: null }, 'frihet', '9.9.9'), /"versions" is/);
   });
 
   it('treats a package with zero published versions as absent, not as an error', () => {
-    assert.match(assertVersionAbsent({ versions: {} }, 'brand-new', '1.0.0'), /^ok brand-new@1\.0\.0 is not on the registry \(0 version\(s\)/);
+    assert.match(
+      assertVersionAbsent({ name: 'brand-new', versions: {} }, 'brand-new', '1.0.0'),
+      /^ok brand-new@1\.0\.0 is not on the registry \(0 version\(s\)/
+    );
+  });
+});
+
+describe('assertPackumentShape — refuses to reason about a document it cannot trust', () => {
+  const good = { name: 'frihet', versions: { '1.3.0': { version: '1.3.0' } } };
+
+  it('accepts a well-formed packument', () => {
+    assert.match(assertPackumentShape(good, 'frihet'), /^ok packument shape for frihet \(1 well-formed/);
+  });
+
+  it('REJECTS versions delivered as an ARRAY — typeof [] === "object" would otherwise pass', () => {
+    // Object.keys(['1.4.0']) is ['0'], so an array would report 1.4.0 as absent.
+    assert.throws(
+      () => assertPackumentShape({ name: 'frihet', versions: ['1.4.0'] }, 'frihet'),
+      /"versions" is an array/
+    );
+  });
+
+  it('rejects a null or missing versions field', () => {
+    assert.throws(() => assertPackumentShape({ name: 'frihet', versions: null }, 'frihet'), /"versions" is/);
+    assert.throws(() => assertPackumentShape({ name: 'frihet' }, 'frihet'), /"versions" is/);
+  });
+
+  it('rejects a document describing a DIFFERENT package', () => {
+    assert.throws(() => assertPackumentShape({ name: 'evil', versions: {} }, 'frihet'), /reports name "evil"/);
+    assert.throws(() => assertPackumentShape({ versions: {} }, 'frihet'), /reports name "\(missing\)"/);
+  });
+
+  it('rejects a non-semver version key', () => {
+    assert.throws(
+      () => assertPackumentShape({ name: 'frihet', versions: { latest: { version: 'latest' } } }, 'frihet'),
+      /non-semver version key "latest"/
+    );
+    assert.throws(
+      () => assertPackumentShape({ name: 'frihet', versions: { '0': { version: '0' } } }, 'frihet'),
+      /non-semver version key "0"/
+    );
+  });
+
+  it('rejects an entry whose declared version disagrees with its key', () => {
+    assert.throws(
+      () => assertPackumentShape({ name: 'frihet', versions: { '1.3.0': { version: '1.4.0' } } }, 'frihet'),
+      /keyed 1\.3\.0 declares version "1\.4\.0"/
+    );
+  });
+
+  it('rejects a non-object entry', () => {
+    assert.throws(
+      () => assertPackumentShape({ name: 'frihet', versions: { '1.3.0': '1.3.0' } }, 'frihet'),
+      /entry for 1\.3\.0 is not an object/
+    );
+  });
+
+  it('assertVersionAbsent inherits the shape guard', () => {
+    assert.throws(() => assertVersionAbsent({ name: 'frihet', versions: ['1.4.0'] }, 'frihet', '1.4.0'), /is an array/);
+  });
+});
+
+describe('assertManifestIdentity — npm publishes by manifest, not by filename', () => {
+  it('accepts the expected identity', () => {
+    assert.match(
+      assertManifestIdentity({ name: 'frihet', version: '1.3.0' }, 'frihet', '1.3.0'),
+      /^ok tarball manifest identity is frihet@1\.3\.0/
+    );
+  });
+
+  it('REJECTS a tarball whose manifest names a different package', () => {
+    assert.throws(
+      () => assertManifestIdentity({ name: 'frihet', version: '1.4.0' }, '@frihet/sdk', '1.4.0'),
+      /declares name "frihet", expected "@frihet\/sdk"/
+    );
+  });
+
+  it('rejects a version mismatch', () => {
+    assert.throws(
+      () => assertManifestIdentity({ name: 'frihet', version: '1.2.0' }, 'frihet', '1.3.0'),
+      /declares version "1\.2\.0", expected "1\.3\.0"/
+    );
+  });
+
+  it('rejects a missing name or version', () => {
+    assert.throws(() => assertManifestIdentity({ version: '1.3.0' }, 'frihet', '1.3.0'), /name "\(missing\)"/);
+    assert.throws(() => assertManifestIdentity({ name: 'frihet' }, 'frihet', '1.3.0'), /version "\(missing\)"/);
+    assert.throws(() => assertManifestIdentity(null, 'frihet', '1.3.0'), /manifest is not an object/);
   });
 });
 
@@ -334,6 +446,74 @@ describe('CLI argument failures exit 3 before touching the network', () => {
   });
 });
 
+describe('--assert-tarball-identity (offline: never touches the registry)', () => {
+  let tmp;
+  let realTgz;
+  let renamedTgz;
+  let impostorTgz;
+
+  before(async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'tarball-identity-'));
+    realTgz = join(tmp, 'frihet-sdk-1.3.0.tgz');
+    const d = await (await fetch(`${REGISTRY}/${encodeURIComponent('@frihet/sdk')}`)).json();
+    const buf = Buffer.from(await (await fetch(d.versions['1.3.0'].dist.tarball)).arrayBuffer());
+    writeFileSync(realTgz, buf);
+
+    // Same bytes, misleading filename: identity must come from the manifest.
+    renamedTgz = join(tmp, 'frihet-9.9.9.tgz');
+    writeFileSync(renamedTgz, buf);
+
+    // The actual attack: a tarball NAMED like the SDK whose manifest says it is
+    // the CLI. Every filename-based check in the workflow would wave this
+    // through and publish the CLI out of the SDK job.
+    const stage = join(tmp, 'stage');
+    const pkgDir = join(stage, 'package');
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(
+      join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'frihet', version: '1.4.0' }, null, 2)
+    );
+    impostorTgz = join(tmp, 'frihet-sdk-1.4.0.tgz');
+    execFileSync('tar', ['-czf', impostorTgz, '-C', stage, 'package']);
+  });
+
+  after(() => {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('accepts the real SDK tarball (exit 0)', () => {
+    const r = runCli(['--assert-tarball-identity', '--package', '@frihet/sdk', '--version', '1.3.0', '--tarball', realTgz]);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /ok tarball manifest identity is @frihet\/sdk@1\.3\.0/);
+  });
+
+  it('still accepts it after the FILE is renamed — identity is the manifest (exit 0)', () => {
+    const r = runCli(['--assert-tarball-identity', '--package', '@frihet/sdk', '--version', '1.3.0', '--tarball', renamedTgz]);
+    assert.equal(r.code, 0, r.out);
+  });
+
+  it('REJECTS a tarball named like the SDK whose manifest says it is the CLI (exit 3)', () => {
+    const r = runCli(['--assert-tarball-identity', '--package', '@frihet/sdk', '--version', '1.4.0', '--tarball', impostorTgz]);
+    assert.equal(r.code, 3, r.out);
+    assert.match(r.out, /declares name "frihet", expected "@frihet\/sdk"/);
+  });
+
+  it('rejects a version mismatch (exit 3)', () => {
+    const r = runCli(['--assert-tarball-identity', '--package', '@frihet/sdk', '--version', '1.2.0', '--tarball', realTgz]);
+    assert.equal(r.code, 3, r.out);
+    assert.match(r.out, /declares version "1\.3\.0", expected "1\.2\.0"/);
+  });
+
+  it('fails closed on an unreadable tarball (exit 3)', () => {
+    const r = runCli(['--assert-tarball-identity', '--package', 'x', '--version', '1.0.0', '--tarball', '/nonexistent/x.tgz']);
+    assert.equal(r.code, 3, r.out);
+  });
+
+  it('readTarballManifest reads the manifest npm would use', () => {
+    assert.deepEqual(readTarballManifest(impostorTgz), { name: 'frihet', version: '1.4.0' });
+  });
+});
+
 /* ================================================================ *
  * 3. Network tests against the immutable 1.3.0 release
  * ================================================================ */
@@ -343,6 +523,10 @@ describe('live readback against the immutable 1.3.0 release', () => {
   let sdkTgz;
   let cliTgz;
   let tamperedTgz;
+  let sdkLatest;
+  let sdkLatestTgz;
+  let cliLatest;
+  let cliLatestTgz;
 
   before(async () => {
     // Preflight: prove the registry is reachable. If it is not, fail loudly here
@@ -375,6 +559,23 @@ describe('live readback against the immutable 1.3.0 release', () => {
     await download('@frihet/sdk', '1.3.0', sdkTgz);
     await download('frihet', '1.3.0', cliTgz);
 
+    // The GREEN readback must run against whatever `dist-tags.latest` is RIGHT
+    // NOW, not against 1.3.0: the readback asserts `dist-tags.latest === version`,
+    // so pinning the pass-case to 1.3.0 would turn this suite red the moment
+    // 1.4.0 ships — a test that fails because the product succeeded. 1.3.0 stays
+    // as the fixture for the facts that are immutable (its integrity, its lack of
+    // attestations, its exact dependency).
+    sdkLatest = doc['dist-tags'].latest;
+    assert.ok(sdkLatest, 'registry must expose dist-tags.latest for @frihet/sdk');
+    sdkLatestTgz = join(tmp, `sdk-${sdkLatest}.tgz`);
+    await download('@frihet/sdk', sdkLatest, sdkLatestTgz);
+
+    const cliDoc = await (await fetch(`${REGISTRY}/frihet`, { headers: { accept: 'application/json' } })).json();
+    cliLatest = cliDoc['dist-tags'].latest;
+    assert.ok(cliLatest, 'registry must expose dist-tags.latest for frihet');
+    cliLatestTgz = join(tmp, `cli-${cliLatest}.tgz`);
+    await download('frihet', cliLatest, cliLatestTgz);
+
     // A one-byte append: the smallest possible corruption a readback must catch.
     tamperedTgz = join(tmp, 'tampered.tgz');
     writeFileSync(tamperedTgz, readFileSync(sdkTgz));
@@ -390,19 +591,36 @@ describe('live readback against the immutable 1.3.0 release', () => {
     assert.equal(sha512Integrity(readFileSync(cliTgz)), CLI_INTEGRITY);
   });
 
-  it('@frihet/sdk@1.3.0 passes without --require-attestations (exit 0)', () => {
-    const r = runCli(['--package', '@frihet/sdk', '--version', '1.3.0', '--tarball', sdkTgz]);
+  it('the CURRENT dist-tags.latest of @frihet/sdk passes a full readback (exit 0)', () => {
+    const r = runCli(['--package', '@frihet/sdk', '--version', sdkLatest, '--tarball', sdkLatestTgz]);
     assert.equal(r.code, 0, r.out);
-    assert.match(r.out, /ok integrity sha512-Y9fiSL5RyPQ/);
-    assert.match(r.out, /ok dist-tags\.latest === 1\.3\.0/);
+    assert.match(r.out, /ok integrity sha512-/);
+    assert.match(r.out, new RegExp(`ok dist-tags\\.latest === ${sdkLatest.replace(/\./g, '\\.')}`));
   });
 
-  it('@frihet/sdk@1.3.0 FAILS with --require-attestations — 1.3.0 was published manually, without provenance (exit 3)', () => {
+  it('1.3.0 still carries its recorded integrity (immutable fact, independent of dist-tags)', () => {
+    assert.equal(sha512Integrity(readFileSync(sdkTgz)), SDK_INTEGRITY);
+  });
+
+  it('1.3.0 has no provenance attestation — the fact, asserted on the live manifest', async () => {
+    // Pinned with the pure helper rather than through the CLI, because the CLI
+    // checks dist-tags BEFORE attestations: once 1.4.0 ships, a CLI-level test on
+    // 1.3.0 would still exit 3, but for a different reason, and would quietly
+    // stop proving anything about attestations.
+    const doc = await (await fetch(`${REGISTRY}/${encodeURIComponent('@frihet/sdk')}`, {
+      headers: { accept: 'application/json' },
+    })).json();
+    assert.throws(
+      () => assertAttestations(doc.versions['1.3.0'], '@frihet/sdk', '1.3.0'),
+      /no dist\.attestations/
+    );
+  });
+
+  it('--require-attestations makes a provenance-less version fail (exit 3)', () => {
     const r = runCli([
       '--package', '@frihet/sdk', '--version', '1.3.0', '--tarball', sdkTgz, '--require-attestations',
     ]);
     assert.equal(r.code, 3, r.out);
-    assert.match(r.out, /no dist\.attestations .* published without provenance/);
   });
 
   it('a local tarball with one extra byte FAILS integrity (exit 3)', () => {
@@ -411,13 +629,13 @@ describe('live readback against the immutable 1.3.0 release', () => {
     assert.match(r.out, /registry dist\.integrity .* != local tarball/);
   });
 
-  it('frihet@1.3.0 with --expect-dependency @frihet/sdk=1.3.0 passes (exit 0)', () => {
+  it('the CURRENT latest frihet depends on the SDK at its own version — lockstep, exact (exit 0)', () => {
     const r = runCli([
-      '--package', 'frihet', '--version', '1.3.0', '--tarball', cliTgz,
-      '--expect-dependency', '@frihet/sdk=1.3.0',
+      '--package', 'frihet', '--version', cliLatest, '--tarball', cliLatestTgz,
+      '--expect-dependency', `@frihet/sdk=${cliLatest}`,
     ]);
     assert.equal(r.code, 0, r.out);
-    assert.match(r.out, /ok dependency @frihet\/sdk === "1\.3\.0"/);
+    assert.match(r.out, /ok dependency @frihet\/sdk === /);
   });
 
   it('frihet@1.3.0 with --expect-dependency @frihet/sdk=1.2.0 fails (exit 3)', () => {

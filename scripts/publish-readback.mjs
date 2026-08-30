@@ -24,6 +24,15 @@
  *   5. `dist.attestations` is present            (only with --require-attestations)
  *   6. each --expect-dependency matches EXACTLY  (no range, no `workspace:`)
  *
+ * TARBALL-IDENTITY MODE (`--assert-tarball-identity`) — npm derives a package's
+ * IDENTITY from the manifest INSIDE the tarball, not from its filename. A file
+ * named `frihet-sdk-1.4.0.tgz` whose `package/package.json` says `name: frihet`
+ * would publish the CLI out of the SDK job: CLI-first, irreversibly, having
+ * passed every filename-based check on the way. This mode reads the manifest out
+ * of the tarball bytes and asserts `name` and `version` are what the caller
+ * expects. Identity comes from the manifest, so renaming the file changes
+ * nothing — which is exactly the property being tested.
+ *
  * ABSENCE MODE (`--assert-absent`) — the pre-publish "never republish" gate.
  * Exits 0 ONLY when the registry document was successfully retrieved AND the
  * version is absent from it. This is deliberately not `npm view … 2>/dev/null`:
@@ -39,6 +48,7 @@
  *      completed is indistinguishable from a readback that failed.
  */
 
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -148,15 +158,102 @@ export function assertExactDependencies(entry, name, version, expectations) {
 }
 
 /**
+ * Strict semver, as npm records it in a packument key. Deliberately anchored and
+ * deliberately narrow: this is the shape a registry key is allowed to have, not
+ * a permissive range parser.
+ */
+const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/**
+ * Refuse to reason about a document that is not shaped like a real packument.
+ *
+ * This exists because `typeof [] === 'object'` and `Object.keys(['1.4.0'])`
+ * yields `['0']`: a document whose `versions` is an ARRAY would let a crafted
+ * source (`--registry 'data:application/json,…'`, a compromised mirror, a
+ * proxy) report a version as absent while it is plainly listed. So `versions`
+ * must be a plain non-array object, every key must be strict semver, every value
+ * must be an object whose own `version` field equals its key, and the document's
+ * `name` must be the package that was asked about.
+ */
+export function assertPackumentShape(doc, name) {
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
+    throw new Error(`${name}: registry document is not an object`);
+  }
+  if (doc.name !== name) {
+    throw new Error(`${name}: registry document reports name "${doc.name ?? '(missing)'}" — refusing to trust a document for a different package`);
+  }
+  const versions = doc.versions;
+  if (!versions || typeof versions !== 'object' || Array.isArray(versions)) {
+    throw new Error(
+      `${name}: registry document's "versions" is ${Array.isArray(versions) ? 'an array' : JSON.stringify(versions ?? null)}, not an object — cannot conclude anything from it`
+    );
+  }
+  for (const [key, entry] of Object.entries(versions)) {
+    if (!SEMVER_RE.test(key)) {
+      throw new Error(`${name}: registry document has a non-semver version key "${key}"`);
+    }
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`${name}: registry entry for ${key} is not an object`);
+    }
+    if (entry.version !== key) {
+      throw new Error(`${name}: registry entry keyed ${key} declares version "${entry.version ?? '(missing)'}" — mismatched packument`);
+    }
+  }
+  return `ok packument shape for ${name} (${Object.keys(versions).length} well-formed version(s))`;
+}
+
+/**
+ * TARBALL-IDENTITY MODE. Reads `package/package.json` out of the gzipped tarball
+ * and asserts the identity npm will actually use.
+ */
+export function assertManifestIdentity(manifest, expectedName, expectedVersion) {
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    throw new Error('tarball manifest is not an object');
+  }
+  if (manifest.name !== expectedName) {
+    throw new Error(
+      `tarball manifest declares name "${manifest.name ?? '(missing)'}", expected "${expectedName}" — npm publishes by MANIFEST identity, not by filename`
+    );
+  }
+  if (manifest.version !== expectedVersion) {
+    throw new Error(
+      `tarball manifest declares version "${manifest.version ?? '(missing)'}", expected "${expectedVersion}"`
+    );
+  }
+  return `ok tarball manifest identity is ${expectedName}@${expectedVersion} (read from package/package.json inside the tgz)`;
+}
+
+/** Extract and parse `package/package.json` from a gzipped npm tarball. */
+export function readTarballManifest(tarballPath) {
+  let raw;
+  try {
+    raw = execFileSync('tar', ['-xOzf', tarballPath, 'package/package.json'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    throw new Error(`cannot read package/package.json from ${tarballPath}: ${err.message}`);
+  }
+  if (!raw || raw.trim() === '') {
+    throw new Error(`${tarballPath} contains no package/package.json`);
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`package/package.json inside ${tarballPath} is not valid JSON: ${err.message}`);
+  }
+}
+
+/**
  * ABSENCE MODE. The inverse of `assertVersionPresent`, and NOT simply its
  * negation: this one also refuses to answer when the document itself is not
  * trustworthy. A registry document with no `versions` object at all is a
  * malformed answer, not an empty one, so it fails rather than reporting absence.
  */
 export function assertVersionAbsent(doc, name, version) {
-  if (!doc || typeof doc !== 'object' || typeof doc.versions !== 'object' || doc.versions === null) {
-    throw new Error(`${name}: registry document has no "versions" object — cannot conclude that ${version} is absent`);
-  }
+  // Shape first: an absence read off a malformed or foreign document is not an
+  // absence, it is a guess.
+  assertPackumentShape(doc, name);
   const versions = Object.keys(doc.versions);
   if (versions.includes(version)) {
     throw new Error(
@@ -180,6 +277,7 @@ export function parseArgs(argv) {
     requireAttestations: false,
     expectDependencies: [],
     assertAbsent: false,
+    assertTarballIdentity: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -195,6 +293,7 @@ export function parseArgs(argv) {
       case '--registry': out.registry = needValue(); break;
       case '--require-attestations': out.requireAttestations = true; break;
       case '--assert-absent': out.assertAbsent = true; break;
+      case '--assert-tarball-identity': out.assertTarballIdentity = true; break;
       case '--expect-dependency': {
         const raw = needValue();
         const eq = raw.indexOf('=');
@@ -212,6 +311,9 @@ export function parseArgs(argv) {
   for (const required of ['package', 'version']) {
     if (!out[required]) throw new Error(`--${required} is required`);
   }
+  if (out.assertAbsent && out.assertTarballIdentity) {
+    throw new Error('--assert-absent and --assert-tarball-identity are different modes; run them as separate invocations');
+  }
   if (out.assertAbsent) {
     // A flag that would be silently ignored is a flag that lies about what ran.
     const ignored = [];
@@ -220,6 +322,14 @@ export function parseArgs(argv) {
     if (out.expectDependencies.length > 0) ignored.push('--expect-dependency');
     if (ignored.length > 0) {
       throw new Error(`--assert-absent cannot be combined with ${ignored.join(', ')} (nothing is published yet to compare against)`);
+    }
+  } else if (out.assertTarballIdentity) {
+    if (!out.tarball) throw new Error('--tarball is required');
+    const ignored = [];
+    if (out.requireAttestations) ignored.push('--require-attestations');
+    if (out.expectDependencies.length > 0) ignored.push('--expect-dependency');
+    if (ignored.length > 0) {
+      throw new Error(`--assert-tarball-identity cannot be combined with ${ignored.join(', ')} (this mode never touches the registry)`);
     }
   } else if (!out.tarball) {
     throw new Error('--tarball is required');
@@ -245,6 +355,21 @@ async function main(argv) {
     opts = parseArgs(argv);
   } catch (err) {
     failClosed(err.message);
+  }
+
+  if (opts.assertTarballIdentity) {
+    console.log(`[publish-readback] package : ${opts.package}@${opts.version}`);
+    console.log(`[publish-readback] local   : ${opts.tarball}`);
+    console.log('[publish-readback] mode    : ASSERT-TARBALL-IDENTITY (offline; npm publishes by manifest, not by filename)');
+    console.log();
+    try {
+      const manifest = readTarballManifest(resolve(opts.tarball));
+      console.log(assertManifestIdentity(manifest, opts.package, opts.version));
+    } catch (err) {
+      failClosed(err.message);
+    }
+    console.log(`\n[publish-readback] OK — the tarball really is ${opts.package}@${opts.version}.`);
+    process.exit(0);
   }
 
   if (opts.assertAbsent) {

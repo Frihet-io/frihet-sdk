@@ -47,6 +47,15 @@ made only in this document.
    unattended; `publish-sdk` then waits on the `npm-publish` environment. Open the
    run, read the `verify` summary, and approve. Approving is the release decision —
    nothing has been published before this point.
+
+   **What the reviewer must check before approving.** A tag push runs the workflow
+   file *from the tag*, so the run you are approving may not be executing the
+   `publish.yml` that is on `main`. On the run page the header shows the tag and,
+   under it, the commit it resolves to; the run's **⋯** menu → **View workflow file**
+   shows the exact `publish.yml` that is executing. Confirm that commit is the one
+   you tagged on `main` and that the workflow file is the reviewed one. This check
+   and the §3.5 tag ruleset are the only two controls on that path — no step inside
+   the workflow can verify itself.
 5. **Watch it finish.** `publish-sdk` → `publish-cli` → `post-publish`. If
    `post-publish` is red the packages are *published but unproven*: read the
    failure before doing anything else, and do not tag another version to "fix" it
@@ -106,7 +115,23 @@ publisher; configuring only one leaves `publish-cli` failing at authentication
    gone out through OIDC — turning it on first removes the break-glass path in §5
    before the replacement is proven.
 
-### 3.5 — Do not rename the workflow
+### 3.5 — Restrict who may create `v*` tags (this is the real authority)
+
+A workflow triggered by a tag push runs the workflow file **from the pushed ref**.
+Anyone who can create a `v[0-9]+.[0-9]+.[0-9]+` tag can therefore point it at a
+commit carrying a rewritten `publish.yml` with none of §4's checks in it. Nothing
+inside this repository can prevent that — it is the trust boundary, not a gap.
+
+1. GitHub → `Frihet-io/frihet-sdk` → **Settings** → **Rules** → **Rulesets** →
+   **New ruleset** → **New tag ruleset**
+2. Name it `release-tags`, set **Enforcement status** to **Active**
+3. **Target tags** → **Add target** → **Include by pattern** → `v*`
+4. Under **Rules** tick **Restrict creations**, **Restrict updates** and
+   **Restrict deletions**
+5. **Bypass list** → **Add bypass** → the repository owner only
+6. **Create**
+
+### 3.6 — Do not rename the workflow
 
 `publish.yml` is part of the npm-side credential. Renaming or moving the file
 silently revokes publishing for both packages, and the failure surfaces only at
@@ -125,13 +150,15 @@ Grep for the step name; if it is not there, the invariant is not enforced.
 | 1 | No long-lived credential: no `NPM_TOKEN`, no `NODE_AUTH_TOKEN`, no `registry-url`, no `.npmrc` write | The absence itself, plus `permissions: {}` at workflow level; `setup-node` is configured without `registry-url` | Nothing to steal from a compromised runner or a malicious dependency |
 | 2 | No attacker-choosable trigger | `on: push: tags: ['v[0-9]+.[0-9]+.[0-9]+']` — no `pull_request`, no `push: branches`, no `workflow_dispatch` | A fork PR cannot start this workflow at all; no free-ref dispatch exists |
 | 3 | Tag authority: annotated tag, on a `main` ancestor, building exactly that commit, matching both manifests | *Assert the tag is annotated and resolve its commit* · *Assert the checked-out tree is the tagged commit* · *Assert the tagged commit is an ancestor of origin/main* · *Assert both package versions equal the tag* | All four run in `verify`, before any job that can reach the environment or a credential. The commit is resolved with `git rev-parse "refs/tags/<tag>^{commit}"` and **not** taken from `GITHUB_SHA`: for a pushed annotated tag that variable can carry the SHA of the tag OBJECT, which `git merge-base --is-ancestor` would reject on every legitimate release |
-| 4 | No republish, ever; no `--force` | *Assert neither version is already published* in `verify`, then *Re-assert @frihet/sdk is not already published* / *Re-assert frihet is not already published* inside each publish job — all four call `publish-readback.mjs --assert-absent` | A re-pushed tag stops in `verify`; a GitHub "re-run failed jobs", which reuses `verify`'s cached success, stops inside the publish job before `npm publish` runs. The gate is **fail-closed**: it exits 0 only when the registry document was actually retrieved *and* the version is missing from it, so an outage, a 5xx or a DNS failure blocks the release instead of being read as "not published" (which is what `npm view … 2>/dev/null` would do) |
+| 4 | No republish, ever; no `--force` | *Assert neither version is already published* in `verify`, then *Re-assert @frihet/sdk is not already published* / *Re-assert frihet is not already published* inside each publish job — all four call `publish-readback.mjs --assert-absent` | A re-pushed tag stops in `verify`; a GitHub "re-run failed jobs", which reuses `verify`'s cached success, stops inside the publish job before `npm publish` runs. The gate is **fail-closed**: it exits 0 only when the registry document was actually retrieved *and* the version is missing from it, so an outage, a 5xx or a DNS failure blocks the release instead of being read as "not published" (which is what `npm view … 2>/dev/null` would do). The document is also shape-checked before it is believed (`assertPackumentShape`): `name` must be the package asked about, `versions` must be a plain non-array object, every key strict semver, every entry's `version` equal to its key — otherwise a crafted source whose `versions` is an *array* would report a listed version as absent, since `typeof [] === "object"` and `Object.keys(["1.4.0"])` is `["0"]` |
 | 5 | Ordering SDK → CLI, and the CLI's dependency is an exact version | `needs: publish-sdk` · *Assert the registry already serves the SDK at this version* (bounded poll) · *Assert the packed CLI depends on the exact SDK version* and *Re-assert the packed CLI depends on the exact SDK version* (read out of the packed tarball, not `package.json`) | A CLI whose `@frihet/sdk` dependency 404s, or still carries `workspace:*`, is never published |
 | 6 | Provenance, explicitly | *Publish @frihet/sdk* / *Publish frihet* use `--provenance --access public`; *Read the registry back* passes `--require-attestations` | If provenance cannot be produced the publish errors instead of silently downgrading; if the registry records no attestation the readback exits 3 |
 | 7 | Fail closed on readback mismatch | *Read the registry back* → `scripts/publish-readback.mjs` | Asserts version present, `dist.integrity` == sha512 of the local tarball, the served tarball re-hashes to it, `dist-tags.latest` == version, attestations present, exact dependency. Any mismatch → exit 3 |
-| 8 | Human gate | `environment: npm-publish` on `publish-sdk` and `publish-cli` | Required reviewer + `v*` tag restriction. Until the environment exists the job waits or fails; removing this key to unblock a release removes the gate |
+| 8 | Human gate, **verified rather than assumed** | `environment: npm-publish` on `publish-sdk` and `publish-cli`, **plus** *Assert the npm-publish environment is protected* in `verify` | Naming an environment that does not exist does **not** make a job wait — GitHub auto-creates it with **no protection rules** and the job runs. So the `environment:` key alone proves nothing. `verify` reads the environment over the REST API and fails the release unless it (a) exists, (b) has a `required_reviewers` rule with ≥1 reviewer, (c) has `deployment_branch_policy.custom_branch_policies == true`. Any non-200 also fails. Removing that step, not just the `environment:` key, is what would remove the gate |
 | 9 | Post-publish proof | *Publish-drift check (strict)* (`--expect-in-sync`, no `--allow-pending`) · *Clean install from the public registry* | Published bytes must rebuild from this source, `npx frihet --version` must equal the version, and `CapabilityUnavailableError` must import from the published SDK |
 | 10 | Least privilege | `permissions: {}` at workflow level; per-job `permissions:`; `id-token: write` only on `publish-sdk` and `publish-cli`; `concurrency: { group: publish, cancel-in-progress: false }` (workflow-wide, deliberately not keyed on the ref, so two different tags cannot release concurrently either) | `verify` and `post-publish` never hold an OIDC credential; no two releases can interleave, and a release cannot be cancelled between the two publishes |
+| 11 | Packed identity: a tarball is the package its **manifest** says it is | *Assert each packed tarball really is the package it is named for* (in `verify`) · *Assert the downloaded tarball really is @frihet/sdk* / *Assert the downloaded tarball really is frihet* (in each publish job, on the bytes that job actually holds) — all call `publish-readback.mjs --assert-tarball-identity` | npm takes a package's name and version from `package/package.json` **inside** the tarball, not from the filename. Without this, a `frihet-sdk-<v>.tgz` whose manifest says `name: frihet` passes every filename-based check and publishes the CLI out of the SDK job — CLI first, and irreversibly |
+| 12 | Pinned supply chain | Every `uses:` is a full 40-hex commit SHA with a `# vX.Y.Z` comment | A moving tag (`@v4`) is a mutable pointer its owner can repoint at new code, and that code would run inside a job holding `id-token: write` and the release tarballs. Re-pin deliberately; do not "update to latest" in a release PR |
 
 ### Why a tarball and not a package directory
 
@@ -167,9 +194,13 @@ tar -xOzf release-artifacts/frihet-X.Y.Z.tgz package/package.json   # "@frihet/s
 # The --assert-absent gate is the same no-republish check the workflow runs; it
 # fails closed if the registry cannot be reached, so an outage cannot be mistaken
 # for "this version is free".
+node scripts/publish-readback.mjs --assert-tarball-identity --package @frihet/sdk --version X.Y.Z \
+  --tarball ./release-artifacts/frihet-sdk-X.Y.Z.tgz
 node scripts/publish-readback.mjs --assert-absent --package @frihet/sdk --version X.Y.Z
 npx npm@12 publish ./release-artifacts/frihet-sdk-X.Y.Z.tgz --access public
 
+node scripts/publish-readback.mjs --assert-tarball-identity --package frihet --version X.Y.Z \
+  --tarball ./release-artifacts/frihet-X.Y.Z.tgz
 node scripts/publish-readback.mjs --assert-absent --package frihet --version X.Y.Z
 npx npm@12 publish ./release-artifacts/frihet-X.Y.Z.tgz --access public
 ```
@@ -215,6 +246,19 @@ the path is available.
   `--require-attestations` asserts that the registry records an attestation for
   the version — what an outside caller can observe. Verifying the signature chain
   is `npm audit signatures`, which this workflow does not run.
+- **It cannot defend against a rewritten workflow on the tag.** GitHub runs a
+  tag-triggered workflow from the pushed ref, so an actor with tag-creation rights
+  can point `vX.Y.Z` at a commit whose `publish.yml` has none of §4's checks. No
+  step in this file can detect that, because the replaced file *is* the file that
+  would be doing the detecting. The two controls that actually bound this are both
+  human and both outside the workflow: the §3.5 tag ruleset restricting `v*`
+  creation to the owner, and the `npm-publish` reviewer confirming, before
+  approving, that the run's commit and workflow file are the ones reviewed on
+  `main` (§2.4). Treat those two as the real security perimeter.
+- **It does not verify the npm-side trusted-publisher configuration.** `verify`
+  proves the *GitHub* environment is protected; whether npm's Trusted Publisher
+  entries point at this repository, this filename and this environment is only
+  observable at publish time, where a mismatch fails authentication.
 - **It has never run end to end.** At the time this file was written the npm-side
   trusted publisher and the `npm-publish` environment did not exist, so the
   workflow has been linted (`actionlint`, clean) and its scripts tested against the

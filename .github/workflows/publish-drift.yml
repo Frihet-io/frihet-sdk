@@ -10,6 +10,13 @@
 # drift verdict is trusted — a gate that assumed its own authority would be exactly
 # the phantom mechanism it exists to catch.
 #
+# Which release gets re-proven is decided by `scripts/resolve-release-pin.mjs`: the
+# newest pin in `scripts/publish-pins.json` marked `"status": "verified"`, chosen by
+# version rather than by array position. Position would be accidental authority —
+# reordering the file, or appending a pin for a release nobody has byte-verified yet,
+# would silently change what "reproducibility holds" means. Unverified pins are
+# ignored, and an ambiguous file fails the job closed rather than picking one.
+#
 # Deliberately a separate workflow from ci.yml: this must never become a merge
 # blocker for a legitimate release-prep PR, and it must keep reporting on main and
 # on a schedule long after the PR that caused the drift is closed.
@@ -32,15 +39,29 @@ jobs:
       - name: Checkout current ref (detector + pins)
         uses: actions/checkout@v4
 
-      - name: Resolve pinned release commit
+      # The resolver is plain Node with no dependencies, but it still needs a Node
+      # to run on before the pinned tree's own toolchain is set up below.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Resolve canonical verified release pin
         id: pin
-        run: echo "commit=$(jq -r '.pins[0].commit' scripts/publish-pins.json)" >> "$GITHUB_OUTPUT"
+        run: node scripts/resolve-release-pin.mjs --github-output
 
       - name: Checkout pinned release commit
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.pin.outputs.commit }}
           path: pin
+
+      # Bind the claim to the evidence. The versions in publish-pins.json are
+      # otherwise decorative: a pin could claim an old commit is 999.0.0, win
+      # selection on that number, and send this job to rebuild a tree that is
+      # really some other release — which would then pass --expect-in-sync and
+      # report that reproducibility holds for a release never re-proven.
+      - name: Assert the pinned tree is the release the pin claims
+        run: node scripts/resolve-release-pin.mjs --assert-tree pin
 
       - uses: pnpm/action-setup@v4
         with:
@@ -52,7 +73,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: pin/pnpm-lock.yaml
 
-      # The pinned commit predates the detector, so carry it back in.
+      # The detector under review does the proving, not whatever copy the pinned tree
+      # happens to contain — otherwise a detector weakened on main would be graded by
+      # an older, stricter version of itself. (The current pin already ships one; this
+      # copy also carries the detector back to pins that predate it.)
       - name: Stage detector into pinned tree
         run: |
           mkdir -p pin/scripts

@@ -4,6 +4,7 @@
     "build": "pnpm -r build",
     "clean": "pnpm -r clean",
     "typecheck": "pnpm -r typecheck",
+    "test:scripts": "node --test scripts/__tests__/*.test.mjs",
     "check:publish-drift": "node scripts/check-publish-drift.mjs"
   },
   "engines": {

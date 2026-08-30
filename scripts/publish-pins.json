@@ -5,11 +5,18 @@
     "the claim 'this repo's dist output is byte-reproducible', because npm exposes no gitHead for these",
     "packages. A claim the gate never re-tests is a phantom mechanism, so publish-drift.yml rebuilds a",
     "pinned commit on every run and asserts --expect-in-sync before any drift verdict is trusted.",
-    "Add a new pin each time a version is published, in the release PR."
+    "Add a new pin each time a version is published, in the release PR.",
+    "Every pin declares a status: 'verified' means its rebuild was compared byte-for-byte against the",
+    "published tarballs on the verifiedAt date; 'pending' means not yet re-proven and is ignored.",
+    "Which pin the gate rebuilds is chosen semantically by scripts/resolve-release-pin.mjs \u2014 the newest",
+    "verified pin, by version. Position in this array carries no authority: reordering these entries",
+    "cannot change the selection, and appending a pending pin cannot hijack it."
   ],
   "pins": [
     {
       "commit": "42f06cf5462a932a1473592d6b8cde82f59d64e1",
+      "status": "verified",
+      "verifiedAt": "2026-08-26",
       "note": "release(sdk): 1.2.0 to npm (#3) \u2014 verified 2026-08-26: rebuild matches both published tarballs byte-for-byte",
       "packages": {
         "@frihet/sdk": "1.2.0",
@@ -18,6 +25,8 @@
     },
     {
       "commit": "0cbf003c1926fadaea0d343294417812ec3be133",
+      "status": "verified",
+      "verifiedAt": "2026-08-30",
       "note": "release(sdk): 1.3.0 to npm (#13) \u2014 verified 2026-08-30: rebuild matches both published npm tarballs byte-for-byte",
       "packages": {
         "@frihet/sdk": "1.3.0",

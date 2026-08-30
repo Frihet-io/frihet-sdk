@@ -10,7 +10,25 @@ not be semver-honest.
 | Package | Previous | Target | Breaking TS? | Notes |
 |---|---|---|---|---|
 | `@frihet/sdk` | 1.2.0 | 1.3.0 | yes (`FinancialSummary`) | Adds `CapabilityUnavailableError`; Stay / Channels runtime-truth; idempotency-safe POST retries; agent-native key URL hint. |
-| `frihet` (CLI) | 1.2.0 | 1.3.0 | no | Adds the `FRIHET_API_KEY_MISSING` machine-readable error contract; ships AGENTS.md; bumps packaged SDK to 1.3.0. |
+| `frihet` (CLI) | 1.2.0 | 1.3.0 | no | Adds the `FRIHET_API_KEY_MISSING` machine-readable error contract; corrects the `frihet login` URL hint; ships the "For AI agents (non-interactive)" section in the published `packages/cli/README.md`; bumps packaged SDK to 1.3.0. |
+
+> **Repository release vs npm package surface** — terminology used
+> in this document:
+>
+> - **REPOSITORY RELEASE** — what is included in the GitHub release
+>   on this branch: the full source tree, including root `AGENTS.md`
+>   and root `README.md`.
+> - **NPM `@frihet/sdk` PACKAGE** — the published tarball: source
+>   `dist/**`, `README.md`, `CHANGELOG.md`, `LICENSE`, `package.json`.
+>   Does **not** include the root `AGENTS.md`.
+> - **NPM `frihet` (CLI) PACKAGE** — the published tarball: `dist/`,
+>   `README.md`, `CHANGELOG.md`, `LICENSE`, `package.json`. Does
+>   **not** include the root `AGENTS.md`.
+> - **NPM consumer guidance** — the per-package `README.md` is the
+>   authoritative consumer-facing guide for each npm surface. The
+>   root `AGENTS.md` is the contributor-facing contract and is
+>   **not** shipped in any npm tarball. Do not add `AGENTS.md` to
+>   the npm package `files` field.
 
 ## 2. Breaking change, headlined
 
@@ -178,8 +196,38 @@ follow. Any deviation is out of scope for this release.
 
 **A. Merge #13 only after independent exact-SHA approval.**
 The merge commit is the canonical release source. Independent
-review must return `APPROVE_RELEASE_SDK_13_EXACT(0192c0ec923eeed6ea1b71d2e512e44779aaddee)`
-(or the post-finalization SHA, see J) before `gh pr merge 13 --squash`.
+review must return
+
+```
+APPROVE_RELEASE_SDK_13_EXACT(REVIEW_HEAD)
+```
+
+where `REVIEW_HEAD` is the **full current PR HEAD** — the exact
+SHA at the tip of `release/sdk-1.3.0` at the moment the reviewer
+runs the gate. The approval token must bind the full PR head; it
+must not bind a short SHA, a partial SHA, or any commit other than
+the PR head.
+
+The `CANDIDATE_DIST_SHA = 0192c0ec923eeed6ea1b71d2e512e44779aaddee`
+is a **separate invariant**: it is the commit whose build produces
+the inspected `1.3.0` candidate dist. Later commits on the release
+branch (e.g. documentation-only edits like `4f49a5d` or this
+release-authority correction) do not change the dist bytes, so
+`CANDIDATE_DIST_SHA` remains stable across them. The reviewer must
+verify that a build of `REVIEW_HEAD` produces a dist that is
+**byte-identical** to the dist of `CANDIDATE_DIST_SHA`. If the
+byte-equality fails: STOP, re-investigate, do not approve.
+
+The two SHAs are independent invariants:
+
+| Invariant | Binds | Stable across |
+|---|---|---|
+| `REVIEW_HEAD` | The PR head the reviewer is approving | one commit per `gh pr edit` / push |
+| `CANDIDATE_DIST_SHA` | The commit whose dist bytes were inspected | until the next source change that mutates dist |
+
+Approval requires both: `REVIEW_HEAD` is the current PR head AND
+`build(REVIEW_HEAD).dist/**` is byte-identical to
+`build(CANDIDATE_DIST_SHA).dist/**`.
 
 **B. Capture `RELEASE_MAIN_SHA`** — the exact SHA on `main` after
 the squash-merge of #13 completes (`git rev-parse origin/main`).

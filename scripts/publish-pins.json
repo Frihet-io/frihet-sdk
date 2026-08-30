@@ -17,8 +17,8 @@
       }
     },
     {
-      "commit": "79d210185c5e0b9e1d7dd29ef9a5fb3868cacc9f",
-      "note": "release(sdk): 1.3.0 to npm \u2014 pending verification: pin references the version-bump commit whose build produces the 1.3.0 dist bytes; the publish-drift workflow's reproducibility-pin job will rebuild this SHA on the next run, and this note will be updated to the verified form once the registry tarball is byte-identical. Update the commit field to the squash-merge commit SHA after the release PR merges, if and only if that commit produces a byte-identical 1.3.0 dist.",
+      "commit": "0192c0ec923eeed6ea1b71d2e512e44779aaddee",
+      "note": "release-candidate 1.3.0 to npm \u2014 PENDING verification. Pin references the exact release-candidate SHA whose build produces the inspected 1.3.0 candidate dist (the version-bump commit 79d2101 plus the remediation commit that corrected the frihet login URL hint in packages/cli/src/commands/login.ts, which materially changed the CLI dist bytes; the pre-remediation version-bump commit no longer produces the final 1.3.0 dist). Registry verification cannot run until 1.3.0 is actually published. After the release PR is squash-merged, the canonical main SHA may replace this reference only after a byte-comparison proves the squash-commit dist/** is identical to this candidate's dist/**; the note will then be updated to the verified form (matching the 1.2.0 pin's wording).",
       "packages": {
         "@frihet/sdk": "1.3.0",
         "frihet": "1.3.0"

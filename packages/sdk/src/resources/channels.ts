@@ -15,9 +15,10 @@ const enc = encodeURIComponent;
 /**
  * Legacy top-level Channels compatibility resource.
  *
- * Read methods temporarily preserve their existing network behavior. Mutation
- * and sync methods are retained only for source compatibility and fail locally
- * with CapabilityUnavailableError before any HTTP request.
+ * Read methods (list/retrieve/search) and `sync` are first-class wrappers
+ * around real HTTP calls the ERP actually serves. The create/update/delete
+ * collection methods are NOT in the ERP public API surface and still fail
+ * locally with CapabilityUnavailableError before any HTTP request.
  */
 export class Channels {
   constructor(private readonly _client: HttpClient) {}
@@ -80,21 +81,24 @@ export class Channels {
   }
 
   /**
-   * @deprecated Channels sync is deliberately not implemented as a public API
-   * capability. This method is retained for source compatibility and fails
-   * locally with CapabilityUnavailableError before any HTTP request.
+   * Trigger an immediate iCal feed sync for the channel.
+   *
+   * `POST /v1/channels/:id/sync` is served by the ERP (publicApi.ts:6891-6911).
+   * It returns `{success, message, channelId}` and updates the channel's
+   * `lastSync` server-side. Before 2026-08 this method was incorrectly pinned
+   * as `not_implemented` in the SDK even though the route existed — corrected
+   * in cross-surface contract truth (see MATRIX.md §P1 #4).
    */
   sync(id: string, opts?: RequestOptions): Promise<ChannelSyncResult> {
-    void id; void opts;
-    return unavailable<ChannelSyncResult>('sync', 'POST', '/channels/:id/sync', 'not_implemented');
+    return this._client.post(`/channels/${enc(id)}/sync`, undefined, opts);
   }
 }
 
 function unavailable<T>(
-  method: 'create' | 'update' | 'del' | 'sync',
+  method: 'create' | 'update' | 'del',
   verb: 'POST' | 'PATCH' | 'DELETE',
   path: string,
-  reason: 'absent' | 'not_implemented',
+  reason: 'absent',
 ): Promise<T> {
   return Promise.reject(new CapabilityUnavailableError(
     `Channels.${method} (${verb} ${path})`,

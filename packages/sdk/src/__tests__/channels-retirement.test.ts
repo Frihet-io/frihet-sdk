@@ -125,26 +125,20 @@ describe('Channels SDK-first retirement contract', () => {
     {
       method: 'create',
       capability: 'Channels.create (POST /channels)',
-      reason: 'absent',
+      reason: 'absent' as const,
       invoke: (channels: Channels) => channels.create({ propertyId: 'prop_1', name: 'Booking' }),
     },
     {
       method: 'update',
       capability: 'Channels.update (PATCH /channels/:id)',
-      reason: 'absent',
+      reason: 'absent' as const,
       invoke: (channels: Channels) => channels.update('ch_1', { name: 'Booking updated' }),
     },
     {
       method: 'del',
       capability: 'Channels.del (DELETE /channels/:id)',
-      reason: 'absent',
+      reason: 'absent' as const,
       invoke: (channels: Channels) => channels.del('ch_1'),
-    },
-    {
-      method: 'sync',
-      capability: 'Channels.sync (POST /channels/:id/sync)',
-      reason: 'not_implemented',
-      invoke: (channels: Channels) => channels.sync('ch_1'),
     },
   ] as const)('$method fails with the typed capability and zero dispatch', async ({ capability, reason, invoke }) => {
     const http = client();
@@ -163,9 +157,7 @@ describe('Channels SDK-first retirement contract', () => {
     expect(error).toMatchObject({ capability, reason });
     expect(error.message).toContain('No request was sent.');
     expect(error.message).toContain(
-      reason === 'absent'
-        ? 'absent from the intended Frihet public API contract'
-        : 'public API capability is deliberately not implemented',
+      'absent from the intended Frihet public API contract',
     );
     for (const call of dispatch) {
       expect(call).not.toHaveBeenCalled();

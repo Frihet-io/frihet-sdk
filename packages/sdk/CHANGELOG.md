@@ -2,6 +2,34 @@
 
 All notable changes to `@frihet/sdk` will be documented in this file.
 
+## 1.4.0 - 2026-XX-XX (release-candidate)
+
+**Cross-surface contract truth.** Aligns the SDK types and method shapes to
+what the Frihet backend (`berthelius/Frihet-ERP` origin/main) actually serves.
+Backed by `cross-surface-contract-truth.test.ts` (11 tests) that pins every
+shape against the live REST route contract.
+
+### BREAKING FOR TYPESCRIPT CONSUMERS
+
+- **`Team.setRole` / `Team.invite.role`**: union narrowed from
+  `'admin' | 'member' | 'viewer' | 'editor' | 'accountant'` to
+  `'admin' | 'editor' | 'accountant' | 'viewer'`. The legacy `'member'`
+  role is rejected by the backend with HTTP 400 (was silently accepted by
+  the SDK type).
+- **`Webhooks.create` / `Webhooks.update`**: `name` is now mandatory
+  (`.strict()` Zod on the backend rejects a missing `name` with HTTP 400).
+  The SDK type now requires it.
+- **`Invoices.createBatch` / `Expenses.createBatch`**: response envelope
+  gained a `meta?: Record<string, unknown>` field. The legacy SDK was
+  silently stripping `summary` + `meta` from the response and returning
+  only `data`.
+- **`Channels.sync`**: now a real `POST /v1/channels/:id/sync` call.
+  Previously returned `CapabilityUnavailableError`. The legacy
+  `capability-unavailable` test entry has been removed.
+
+No backend capability was added or removed by these changes — every shape
+is now the one the API actually serves.
+
 ## 1.3.0 - 2026-08-30
 
 **This is the first release of `@frihet/sdk` since 1.2.0 (2026-06-20).** It

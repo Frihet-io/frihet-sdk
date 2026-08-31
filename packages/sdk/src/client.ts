@@ -310,12 +310,23 @@ export class HttpClient {
    * Unwrap the API response envelope.
    * API returns: { data: T, meta: {...} } for single resources
    *              { data: T[], total, limit, offset, meta: {...} } for lists
+   *              { data: BatchResultItem<T>[], summary, meta } for batch
+   *              (publicApi.ts:5494-5499) — the SDK now preserves the full
+   *              envelope so callers can read `summary` and `meta`.
    */
   private unwrapEnvelope<T>(json: unknown): T {
     if (json && typeof json === 'object' && 'data' in json) {
       const obj = json as Record<string, unknown>;
       // Paginated response — return full envelope so Page<T> shape is preserved
       if ('total' in obj && 'limit' in obj) {
+        return json as T;
+      }
+      // Batch response — return full envelope so BatchResult<T> shape is
+      // preserved (data + summary + meta). Top-level `summary` is unique to
+      // batch in the public API: fiscal summaries wrap their data as
+      // `{data: {modelo303, summary, ...}}` (nested), and the rest of the
+      // single-resource endpoints do not emit `summary` at all.
+      if ('summary' in obj && obj.summary && typeof obj.summary === 'object') {
         return json as T;
       }
       // Single resource or action result — unwrap

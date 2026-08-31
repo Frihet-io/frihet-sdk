@@ -307,7 +307,13 @@ export type WebhookEvent =
 
 export interface Webhook {
   id: string;
-  name?: string;
+  /**
+   * REQUIRED on create/update. The ERP `webhookSchema.strict()` (publicApi.ts:5286)
+   * makes `name: z.string().max(200)` mandatory and rejects without it
+   * (HTTP 400). The SDK historically advertised it as optional — corrected in
+   * 2026-08 (cross-surface contract truth, see MATRIX.md §P1 #2).
+   */
+  name: string;
   url: string;
   events: WebhookEvent[];
   status?: 'active' | 'inactive' | 'paused';
@@ -318,8 +324,8 @@ export interface Webhook {
 
 export interface WebhookListParams extends ListParams {}
 
-export type CreateWebhookParams = Pick<Webhook, 'url' | 'events'> &
-  Partial<Pick<Webhook, 'name' | 'status' | 'secret'>>;
+export type CreateWebhookParams = Pick<Webhook, 'url' | 'events' | 'name'> &
+  Partial<Pick<Webhook, 'status' | 'secret'>>;
 
 export type UpdateWebhookParams = Partial<CreateWebhookParams>;
 
@@ -662,6 +668,14 @@ export interface BatchResultItem<T> {
 export interface BatchResult<T> {
   data: BatchResultItem<T>[];
   summary: { total: number; succeeded: number; failed: number };
+  /**
+   * Per-call metadata returned by the ERP at the top level of the batch
+   * envelope (e.g. `{requestId, timestamp}` — publicApi.ts:5438,5494-5499).
+   * Was silently dropped by the SDK before 2026-08 (cross-surface contract
+   * truth, see MATRIX.md §P1 #3); the client now recognises the batch
+   * envelope shape and preserves every top-level key.
+   */
+  meta?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1049,11 +1063,14 @@ export type ListMembersResult = Page<TeamMember>;
 /**
  * Invite-member body. The `accountant` role is seat-exempt; every other role
  * consumes a plan seat. Mirrors the `.strict()` Zod schema in publicApi.ts:2718
- * (email max255, role enum WITHOUT `owner`, name max200 optional).
+ * (email max255, role enum without `owner` AND without `member` — see
+ * `ASSIGNABLE_TEAM_ROLES` in teamRoleContract.ts:11, which is the canonical
+ * authority. `member` was historically advertised by the SDK but the ERP
+ * rejects it with HTTP 400 since 2026 Q2.).
  */
 export interface TeamInviteParams {
   email: string;
-  role: 'admin' | 'member' | 'viewer' | 'editor' | 'accountant';
+  role: 'admin' | 'editor' | 'accountant' | 'viewer';
   name?: string;
 }
 
@@ -1069,7 +1086,7 @@ export interface TeamInviteResult {
   expiresAt: string;
 }
 
-export type SetTeamRole = 'admin' | 'member' | 'viewer' | 'editor' | 'accountant';
+export type SetTeamRole = 'admin' | 'editor' | 'accountant' | 'viewer';
 
 export interface SetTeamRoleResult {
   id: string;

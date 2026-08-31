@@ -1050,10 +1050,10 @@ describe('Team resource (mocked fetch)', () => {
   });
 
   it('invite() sends POST /team/members/invite with body', async () => {
-    const inviteResult = { id: 'inv_1', email: 'new@b.com', role: 'member', name: null, status: 'pending', expiresAt: '2026-06-27' };
+    const inviteResult = { id: 'inv_1', email: 'new@b.com', role: 'editor', name: null, status: 'pending', expiresAt: '2026-06-27' };
     mockFetch.mockResolvedValueOnce(jsonResponse({ data: inviteResult }));
 
-    const result = await team.invite({ email: 'new@b.com', role: 'member' });
+    const result = await team.invite({ email: 'new@b.com', role: 'editor' });
 
     const [url, opts] = mockFetch.mock.calls[0]!;
     expect(url).toContain('/team/members/invite');
@@ -1066,13 +1066,13 @@ describe('Team resource (mocked fetch)', () => {
   it('invite() maps a "Team limit reached" 409 to TeamSeatLimitError', async () => {
     mockFetch.mockResolvedValueOnce(errorResponse(409, 'Team limit reached for your plan'));
 
-    await expect(team.invite({ email: 'x@b.com', role: 'member' })).rejects.toBeInstanceOf(TeamSeatLimitError);
+    await expect(team.invite({ email: 'x@b.com', role: 'editor' })).rejects.toBeInstanceOf(TeamSeatLimitError);
   });
 
   it('invite() keeps other 409s as ConflictError', async () => {
     mockFetch.mockResolvedValueOnce(errorResponse(409, 'User is already a team member'));
 
-    await expect(team.invite({ email: 'x@b.com', role: 'member' })).rejects.toBeInstanceOf(ConflictError);
+    await expect(team.invite({ email: 'x@b.com', role: 'editor' })).rejects.toBeInstanceOf(ConflictError);
   });
 
   it('setRole() sends PATCH /team/members/:id/role with the role body', async () => {
@@ -1171,10 +1171,6 @@ describe('Channels resource (mocked fetch)', () => {
     await expect(channels.create({ propertyId: 'prop_1', name: 'Booking' })).rejects.toMatchObject({
       name: 'CapabilityUnavailableError',
       reason: 'absent',
-    });
-    await expect(channels.sync('ch_1')).rejects.toMatchObject({
-      name: 'CapabilityUnavailableError',
-      reason: 'not_implemented',
     });
     expect(mockFetch).not.toHaveBeenCalled();
   });

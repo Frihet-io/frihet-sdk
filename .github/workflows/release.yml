@@ -1,0 +1,146 @@
+name: Release npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact version already committed in packages/sdk/package.json and packages/cli/package.json
+        required: true
+        default: 1.4.0
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+  id-token: write
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Reconcile immutable npm and GitHub release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: npm-release
+    steps:
+      - name: Check out exact dispatch revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use release runtime
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.20.0
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+          package-manager-cache: false
+
+      - name: Verify dispatch provenance
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: node .github/scripts/release-control.cjs verify-dispatch | grep -Fx 'release-control:verify-dispatch:ok'
+
+      - name: Verify protected release environment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/release-control.cjs verify-environment | grep -Fx 'release-control:verify-environment:ok'
+
+      - name: Verify exact package metadata (SDK + CLI lockstep)
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: node .github/scripts/release-control.cjs verify-metadata | grep -Fx 'release-control:verify-metadata:ok'
+
+      - name: Install from lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Build exact committed artifacts
+        run: |
+          pnpm build
+          git diff --exit-code -- packages/sdk/dist packages/cli/dist
+          test -z "$(git status --porcelain --untracked-files=no)"
+
+      - name: Run contract and release-policy tests
+        run: pnpm test:contract
+
+      - name: Audit production dependency surface
+        run: pnpm audit --prod --audit-level=high
+
+      # ─────────────────────────────────────────────────────────────────────
+      # SDK FIRST. The CLI depends on @frihet/sdk via workspace:*; pnpm
+      # rewrites that to an exact version at pack time. If the CLI were
+      # published first, its tarball would pin to @frihet/sdk@VERSION before
+      # the registry has it — every CLI installer would break.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: Build SDK pack evidence
+        id: sdk_evidence
+        run: node .github/scripts/release-control.cjs pack-evidence --package @frihet/sdk | grep -Fx 'release-control:pack-evidence:ok'
+
+      - name: SDK registry decision
+        id: sdk_decision
+        run: node .github/scripts/release-control.cjs registry-decision --package @frihet/sdk | grep -Fx 'release-control:registry-decision:ok'
+
+      - name: Publish @frihet/sdk with trusted publishing (OIDC + provenance)
+        if: steps.sdk_decision.outputs.exists == 'false'
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          node .github/scripts/release-control.cjs verify-dispatch | grep -Fx 'release-control:verify-dispatch:ok'
+          pnpm --filter @frihet/sdk publish --provenance --access public --no-git-checks
+
+      - name: Reconcile final @frihet/sdk npm bytes
+        run: node .github/scripts/release-control.cjs reconcile-registry --package @frihet/sdk --retry | grep -Fx 'release-control:reconcile-registry:ok'
+
+      # Hard gate: the CLI cannot publish until @frihet/sdk@VERSION is verified
+      # to exist on the registry. This is the published-promise-enforcer that
+      # exists in addition to the forced order of steps above.
+      - name: Confirm SDK visible to CLI installers
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: node .github/scripts/release-control.cjs verify-sdk-published | grep -Fx 'release-control:verify-sdk-published:ok'
+
+      # ─────────────────────────────────────────────────────────────────────
+      # CLI SECOND. Only proceeds once the SDK gate above is green.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: Build CLI pack evidence
+        id: cli_evidence
+        run: node .github/scripts/release-control.cjs pack-evidence --package frihet | grep -Fx 'release-control:pack-evidence:ok'
+
+      - name: CLI registry decision
+        id: cli_decision
+        run: node .github/scripts/release-control.cjs registry-decision --package frihet | grep -Fx 'release-control:registry-decision:ok'
+
+      - name: Publish frihet CLI with trusted publishing (OIDC + provenance)
+        if: steps.cli_decision.outputs.exists == 'false'
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          node .github/scripts/release-control.cjs verify-dispatch | grep -Fx 'release-control:verify-dispatch:ok'
+          pnpm --filter frihet publish --provenance --access public --no-git-checks
+
+      - name: Reconcile final frihet npm bytes
+        run: node .github/scripts/release-control.cjs reconcile-registry --package frihet --retry | grep -Fx 'release-control:reconcile-registry:ok'
+
+      # ─────────────────────────────────────────────────────────────────────
+      # Git-level reconciliation: a single immutable tag + GitHub Release at
+      # the SAME GITHUB_SHA, naming both packages.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: Reconcile immutable Git tag and GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/release-control.cjs reconcile-github-release | grep -Fx 'release-control:reconcile-github-release:ok'
+
+      # Post-publish: append the proven pin to scripts/publish-pins.json so the
+      # publish-drift detector can rebuild THIS exact commit and assert byte
+      # equality to the tarballs just published.
+      - name: Finalize publish-pins.json entry
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/release-control.cjs finalize-pins | grep -Fx 'release-control:finalize-pins:ok'

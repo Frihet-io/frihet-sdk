@@ -1,0 +1,750 @@
+# Publishes @frihet/sdk and frihet to npm using TRUSTED PUBLISHING (OIDC).
+#
+# WHY THIS EXISTS
+# GitHub restricted bypass-2FA granular access tokens on 2026-07-31 and will
+# eliminate direct publishing with them by January 2027. The `frihet` npm account
+# uses a passkey (WebAuthn) for 2FA and has no TOTP, so an unattended publish
+# cannot answer an OTP prompt. Trusted publishing removes the question: there is
+# no long-lived credential in this repo at all — npm exchanges a short-lived
+# GitHub OIDC token for publish rights, scoped to this repository, this workflow
+# FILENAME, and this environment.
+#
+# THE FILENAME IS PART OF THE CREDENTIAL. npm's trusted-publisher validation
+# matches on `publish.yml`. Renaming or moving this file revokes publishing.
+# For the same reason this workflow must never call a reusable workflow to do the
+# publishing: npm's docs warn that with `workflow_call`, "validation checks the
+# calling workflow's name instead of the workflow that actually contains the
+# publish command, which can cause configuration mismatches."
+#
+# AUTHORITY CHAIN (each link is enforced below, not merely asserted)
+#   annotated tag on a main ancestor -> versions agree with the tag -> the
+#   npm-publish environment exists AND is protected -> version is not already
+#   published -> pnpm-packed bytes whose MANIFEST identity is checked -> human
+#   approves the environment -> OIDC publish -> registry read back against those
+#   exact bytes -> strict byte-reproducibility drift check + a clean install.
+#
+# WHAT LIMITS THIS WORKFLOW (stated, not implied)
+# A workflow triggered by a tag push runs the workflow file FROM THE PUSHED REF.
+# Anyone who can create a `v*` tag can therefore point it at a commit carrying a
+# rewritten `publish.yml` with none of these checks. No step below can prevent
+# that — it is not a gap in this file, it is the trust boundary. The two controls
+# that actually bound it are OUTSIDE this repo: a tag ruleset restricting who may
+# create `v*` tags, and the required reviewer on the `npm-publish` environment,
+# who must confirm the run's workflow file matches main before approving. See
+# RELEASING.md §3 and §6.
+#
+# WHAT PUBLISHES: the tarballs produced by `pnpm pack`, not a directory. This is
+# deliberate. `npm publish` does NOT rewrite pnpm's `workspace:*` protocol, so
+# publishing `packages/cli` as a directory would ship an uninstallable manifest;
+# `pnpm pack` rewrites it to the exact version. npm's publish command accepts
+# "a gzipped tarball containing such a folder" as a package spec, and its
+# provenance prerequisites (`ensureProvenanceGeneration` in libnpmpublish) gate
+# only on the CI provider, the OIDC token and `--access public` — never on the
+# spec being a directory. A tarball spec additionally skips `prepublishOnly`
+# ("only run scripts for directory type publishes"), so no rebuild can occur
+# between the bytes we hashed and the bytes npm uploads. Because npm takes a
+# package's IDENTITY from the manifest inside the tarball rather than from its
+# filename, every tarball is identity-checked before it is published.
+#
+# SHELL SAFETY: no `${{ }}` expression is ever interpolated into a `run:` body.
+# Values reach the shell through step-level `env:` and are read as "$VAR". Every
+# `run:` is block form with an explicit `set -euo pipefail`, and `defaults.run.shell`
+# pins bash so that is actually the shell being configured.
+#
+# SUPPLY CHAIN: every `uses:` is pinned to a full commit SHA. A moving tag like
+# `@v4` is a mutable pointer that the action's owner — or anyone who compromises
+# them — can repoint at new code, and that code would run inside a job holding
+# `id-token: write` and the release tarballs. The `# vX.Y.Z` comments record which
+# release each SHA was at the time of pinning.
+#
+# NOT END-TO-END TESTABLE FROM THIS REPO: the first successful run requires the
+# npm-side trusted publisher and the GitHub environment, both of which are owner
+# actions performed outside this repository. See RELEASING.md.
+name: Publish
+
+# Tag pushes only. No `pull_request` (a fork PR must never reach a publish job),
+# no `push: branches`, no `workflow_dispatch` (which would let any ref be chosen).
+# The tag pattern is exact semver, so `v1.3.0-rc.1` does not trigger a publish.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+# Workflow-wide group, deliberately NOT keyed on the ref: two different tags must
+# not release concurrently either, or the second could win the `latest` dist-tag
+# race. And a running release must never be cancelled halfway between publishing
+# the SDK and publishing the CLI.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+# Deny by default at the workflow level; every job grants only what it needs.
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Node is pinned EXACTLY, not to the `24` line. Trusted publishing requires npm
+  # >= 11.5.1, and npm ships bundled with Node — but that floor is not a property
+  # of a major version: of the 28 Node 24.x releases, eight (v24.0.0 through
+  # v24.4.1) bundle npm below 11.5.1, the lowest being 11.3.0 in v24.2.0.
+  # Node 24.20.0 bundles npm 11.19.0 (verified against https://nodejs.org/dist/index.json),
+  # which clears the floor with no global `npm install -g` inside a job that holds
+  # `id-token: write`. The runtime assertions below still check the floor, so a
+  # drift in what this pin resolves to fails the release instead of publishing.
+  # (The Node 22 line bundles npm 10.9.8 and cannot be used for publishing.)
+  NODE_PUBLISH_VERSION: '24.20.0'
+  # The only account permitted to approve a publish deployment. Asserted against
+  # the environment's required_reviewers, so silently swapping the reviewer for
+  # someone else (or for a team) fails the release rather than passing quietly.
+  REQUIRED_REVIEWER_LOGIN: 'berthelius'
+  # Build toolchain pinned exactly, not by major: the published 1.3.0 bytes were
+  # produced by pnpm 9.15.4 on Node 22.22.2, and `check-publish-drift.mjs` plus
+  # the post-publish re-pack proof both compare BYTES. A floating minor that
+  # changes tsup/esbuild output would turn a correct release red.
+  PNPM_BUILD_VERSION: '9.15.4'
+  NODE_BUILD_VERSION: '22.22.2'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Everything that can reject a release happens HERE, before any job that can
+  # reach the environment or a credential. A tag that fails any check below never
+  # gets as far as asking a human to approve a deployment.
+  # ---------------------------------------------------------------------------
+  verify:
+    name: Tag authority, environment protection, build, and packed bytes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # what GitHub's fine-grained table lists for the environments endpoints
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      commit: ${{ steps.tag.outputs.commit }}
+    steps:
+      - name: Checkout tagged commit (full history for the ancestry proof)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      # INVARIANT 3 (tag authority), part 1: the tag must be an ANNOTATED tag.
+      # A lightweight tag is just a ref anyone with push access can move; an
+      # annotated tag is an object with an author and a date that this run records.
+      #
+      # This step also resolves the tag to its COMMIT and exports it. Everything
+      # downstream uses that value rather than GITHUB_SHA, because for a pushed
+      # annotated tag GITHUB_SHA can be the SHA of the TAG OBJECT rather than of
+      # the commit it points at. Feeding a tag-object SHA to `git merge-base
+      # --is-ancestor` would fail on every legitimate release. `^{commit}`
+      # dereferences either kind of tag to the commit, so this is correct
+      # regardless of which value GITHUB_SHA happens to carry.
+      - name: Assert the tag is annotated and resolve its commit
+        id: tag
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          OBJ_TYPE="$(git cat-file -t "refs/tags/${TAG}")"
+          if [ "$OBJ_TYPE" != "tag" ]; then
+            echo "::error::${TAG} is a ${OBJ_TYPE} object, not an annotated tag. Re-tag with 'git tag -a'."
+            exit 1
+          fi
+          COMMIT="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          echo "ok annotated tag ${TAG} -> ${COMMIT}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
+
+      # The tree being built must be the tagged commit itself, not whatever the
+      # checkout happened to land on.
+      - name: Assert the checked-out tree is the tagged commit
+        env:
+          COMMIT: ${{ steps.tag.outputs.commit }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [ "$HEAD_SHA" != "$COMMIT" ]; then
+            echo "::error::HEAD is ${HEAD_SHA} but the tag points at ${COMMIT}. Refusing to build a tree the tag does not describe."
+            exit 1
+          fi
+          echo "ok HEAD == ${COMMIT}"
+
+      # INVARIANT 3, part 2: the tagged commit must already be on main. This is
+      # what stops a release being cut from a side branch, a fork, or a commit
+      # that never passed CI on main.
+      - name: Assert the tagged commit is an ancestor of origin/main
+        env:
+          COMMIT: ${{ steps.tag.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
+            echo "::error::${COMMIT} is not an ancestor of origin/main. Releases are cut from main only."
+            exit 1
+          fi
+          echo "ok ${COMMIT} is an ancestor of origin/main"
+
+      # INVARIANT 8 (human gate), verified rather than assumed. Referencing an
+      # environment that does not exist does NOT make a job wait: GitHub creates
+      # the environment implicitly, with NO protection rules, and the job runs.
+      # So "the publish job names an environment" proves nothing on its own. This
+      # step reads the environment's real configuration and fails the release
+      # before any publish job starts if the human gate is missing or toothless.
+      #
+      # On a PUBLIC repository these endpoints are readable without any token at
+      # all (verified: an unauthenticated GET of /environments returns 200), so
+      # the job token is a convenience, not the authority. `actions: read` is what
+      # GitHub's fine-grained permission table lists for the environments
+      # endpoints. If this ever 403s, widen the permission — do NOT delete the
+      # step, which is the only thing standing between a deleted environment and
+      # an unreviewed publish.
+      - name: Assert the npm-publish environment is protected
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUIRED_REVIEWER_LOGIN: ${{ env.REQUIRED_REVIEWER_LOGIN }}
+        run: |
+          set -euo pipefail
+          if ! gh api "repos/${GITHUB_REPOSITORY}/environments/npm-publish" > environment.json; then
+            echo "::error::Cannot read the npm-publish environment. If it does not exist, create it (RELEASING.md §3.1) — a referenced-but-missing environment is auto-created WITHOUT protection rules and would publish with no human approval."
+            exit 1
+          fi
+          if ! gh api "repos/${GITHUB_REPOSITORY}/environments/npm-publish/deployment-branch-policies" > policies.json; then
+            echo "::error::Cannot read npm-publish deployment branch/tag policies. Configure 'Selected branches and tags' with the v* TAG pattern (RELEASING.md §3.1)."
+            exit 1
+          fi
+          node -e '
+            const fs = require("node:fs");
+            const env = JSON.parse(fs.readFileSync("environment.json", "utf8"));
+            const wanted = process.env.REQUIRED_REVIEWER_LOGIN;
+
+            const rules = Array.isArray(env.protection_rules) ? env.protection_rules : [];
+            const rule = rules.find((r) => r.type === "required_reviewers");
+            if (!rule) {
+              console.error("::error::npm-publish has no required_reviewers protection rule — the human gate does not exist.");
+              process.exit(1);
+            }
+            const reviewers = Array.isArray(rule.reviewers) ? rule.reviewers : [];
+            if (reviewers.length < 1) {
+              console.error("::error::npm-publish requires reviewers but lists none — nobody can approve, and nothing gates the publish.");
+              process.exit(1);
+            }
+            for (const r of reviewers) {
+              if (r.type !== "User") {
+                console.error("::error::npm-publish reviewer of type " + r.type + " is not allowed; only the named user may approve a publish.");
+                process.exit(1);
+              }
+              const login = r.reviewer && r.reviewer.login;
+              if (login !== wanted) {
+                console.error("::error::npm-publish reviewer \"" + login + "\" is not the expected " + wanted + ".");
+                process.exit(1);
+              }
+            }
+
+            const policy = env.deployment_branch_policy;
+            if (!policy || policy.custom_branch_policies !== true) {
+              console.error("::error::npm-publish does not restrict deployments to selected branches/tags (deployment_branch_policy.custom_branch_policies must be true).");
+              process.exit(1);
+            }
+
+            const list = JSON.parse(fs.readFileSync("policies.json", "utf8"));
+            const policies = Array.isArray(list.branch_policies) ? list.branch_policies : [];
+            if (policies.length === 0) {
+              console.error("::error::npm-publish has custom policies enabled but none defined — every ref would be blocked, or worse, allowed. Add a TAG policy for v*.");
+              process.exit(1);
+            }
+            const nonTag = policies.filter((p) => p.type !== "tag");
+            if (nonTag.length > 0) {
+              console.error("::error::npm-publish has non-tag deployment policies (" + nonTag.map((p) => p.type + ":" + p.name).join(", ") + "). Releases come from tags only; a branch policy would let a branch deploy to the publish environment.");
+              process.exit(1);
+            }
+            if (!policies.some((p) => p.name === "v*")) {
+              console.error("::error::npm-publish has no tag policy named exactly v* (found: " + policies.map((p) => p.name).join(", ") + ").");
+              process.exit(1);
+            }
+            console.log("ok npm-publish: required_reviewers = [" + reviewers.map((r) => r.reviewer.login).join(", ") + "], " + policies.length + " tag-only policy/policies incl. v*");
+          '
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: ${{ env.PNPM_BUILD_VERSION }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_BUILD_VERSION }}
+          cache: pnpm
+
+      # INVARIANT 3, part 3: the tag is only a label until the manifests agree
+      # with it. Both packages release in lockstep at the same version.
+      - name: Assert both package versions equal the tag
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          SDK_VERSION="$(node -p "require('./packages/sdk/package.json').version")"
+          CLI_VERSION="$(node -p "require('./packages/cli/package.json').version")"
+          if [ "$SDK_VERSION" != "$VERSION" ] || [ "$CLI_VERSION" != "$VERSION" ]; then
+            echo "::error::tag says ${VERSION} but @frihet/sdk is ${SDK_VERSION} and frihet is ${CLI_VERSION}"
+            exit 1
+          fi
+          echo "ok both packages declare ${VERSION}"
+
+      # INVARIANT 4 (no republish). Deliberately NOT `npm view … 2>/dev/null`:
+      # that idiom reads any non-zero exit as "absent", so a registry outage or a
+      # 5xx would wave a republish through. `--assert-absent` exits 0 only when
+      # the registry document was actually retrieved, is shaped like a real
+      # packument for this package, AND does not list the version.
+      - name: Assert neither version is already published
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/publish-readback.mjs --assert-absent --package "@frihet/sdk" --version "$VERSION"
+          node scripts/publish-readback.mjs --assert-absent --package "frihet" --version "$VERSION"
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          pnpm build
+
+      - name: Typecheck
+        run: |
+          set -euo pipefail
+          pnpm typecheck
+
+      - name: SDK test suite
+        run: |
+          set -euo pipefail
+          pnpm --filter @frihet/sdk test
+
+      - name: CLI test suite
+        run: |
+          set -euo pipefail
+          pnpm --filter frihet test
+
+      - name: Release-script test suite
+        run: |
+          set -euo pipefail
+          node --test scripts/__tests__/publish-readback.test.mjs
+
+      # `pnpm pack` (not `npm pack`) is what rewrites `workspace:*` into the exact
+      # version. These are the exact bytes that will be published.
+      - name: Pack both packages
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts
+          DEST="$(pwd)/release-artifacts"
+          ( cd packages/sdk && pnpm pack --pack-destination "$DEST" )
+          ( cd packages/cli && pnpm pack --pack-destination "$DEST" )
+          ls -l release-artifacts
+
+      # INVARIANT 11 (packed identity). npm resolves a package's name and version
+      # from the manifest INSIDE the tarball, never from the filename. Without
+      # this, a `frihet-sdk-<v>.tgz` whose manifest says `name: frihet` would sail
+      # through every filename-based check and publish the CLI from the SDK job —
+      # CLI first, and irreversibly.
+      - name: Assert each packed tarball really is the package it is named for
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/publish-readback.mjs --assert-tarball-identity \
+            --package "@frihet/sdk" --version "$VERSION" \
+            --tarball "./release-artifacts/frihet-sdk-${VERSION}.tgz"
+          node scripts/publish-readback.mjs --assert-tarball-identity \
+            --package "frihet" --version "$VERSION" \
+            --tarball "./release-artifacts/frihet-${VERSION}.tgz"
+
+      # INVARIANT 5 (byte proof of the CLI's dependency), checked on the packed
+      # bytes themselves rather than on package.json — because the rewrite is
+      # exactly what could fail silently.
+      - name: Assert the packed CLI depends on the exact SDK version
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          DEP="$(tar -xOzf "release-artifacts/frihet-${VERSION}.tgz" package/package.json \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s).dependencies||{};process.stdout.write(String(d["@frihet/sdk"]))})')"
+          if [ "$DEP" != "$VERSION" ]; then
+            echo "::error::packed CLI depends on @frihet/sdk \"${DEP}\", expected exactly \"${VERSION}\" (pnpm pack did not rewrite the workspace protocol)"
+            exit 1
+          fi
+          echo "ok packed CLI depends on @frihet/sdk ${VERSION} exactly"
+
+      # The checksums travel with the artifact so the publish jobs can prove that
+      # what they downloaded is what this job built, before handing it a credential.
+      - name: Record sha512 of each tarball
+        run: |
+          set -euo pipefail
+          cd release-artifacts
+          sha512sum ./*.tgz > checksums.txt
+          cat checksums.txt
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-tarballs
+          path: release-artifacts/
+          retention-days: 7
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # SDK first: the CLI's published manifest points at an exact SDK version, so a
+  # CLI on the registry whose SDK is not yet there is a broken install for anyone
+  # who catches the window.
+  # ---------------------------------------------------------------------------
+  publish-sdk:
+    name: Publish @frihet/sdk (OIDC)
+    needs: verify
+    runs-on: ubuntu-latest
+    # INVARIANT 8: the human gate. The owner is a required reviewer on this
+    # environment and it is restricted to `v*` tags — both PROVEN by the
+    # "Assert the npm-publish environment is protected" step in `verify`, because
+    # naming a nonexistent environment here would silently create an unprotected
+    # one rather than blocking.
+    environment: npm-publish
+    permissions:
+      id-token: write # OIDC: the only credential in this workflow
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_PUBLISH_VERSION }}
+
+      # No `npm install -g` inside a job holding `id-token: write`: the bundled
+      # npm of the pinned Node already clears the floor. This step only proves it.
+      - name: Assert toolchain meets the trusted-publishing floor
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          node -e '
+            const [nMaj, nMin] = process.versions.node.split(".").map(Number);
+            if (nMaj < 22 || (nMaj === 22 && nMin < 14)) {
+              console.error("Node " + process.versions.node + " < 22.14.0 — trusted publishing requires 22.14.0 or higher");
+              process.exit(1);
+            }
+            console.log("ok node " + process.versions.node);
+          '
+          NPM_VERSION="$(npm --version)"
+          node -e '
+            const v = process.argv[1].split(".").map(Number);
+            const floor = [11, 5, 1];
+            for (let i = 0; i < 3; i++) {
+              if (v[i] > floor[i]) break;
+              if (v[i] < floor[i]) {
+                console.error("npm " + process.argv[1] + " < 11.5.1 — trusted publishing requires 11.5.1 or later");
+                process.exit(1);
+              }
+            }
+            console.log("ok npm " + process.argv[1] + " (bundled with this Node, no global install)");
+          ' "$NPM_VERSION"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-tarballs
+          path: release-artifacts
+
+      # Artifact integrity: prove these are the bytes `verify` built and tested,
+      # before they are handed to a credential.
+      - name: Verify downloaded tarballs against the recorded checksums
+        run: |
+          set -euo pipefail
+          cd release-artifacts
+          sha512sum -c checksums.txt
+
+      # INVARIANT 11 again, on the downloaded bytes. `verify` checked the tarball
+      # it packed; this checks the tarball this job actually holds.
+      - name: Assert the downloaded tarball really is @frihet/sdk
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/publish-readback.mjs --assert-tarball-identity \
+            --package "@frihet/sdk" --version "$VERSION" \
+            --tarball "./release-artifacts/frihet-sdk-${VERSION}.tgz"
+
+      # INVARIANT 4, re-checked inside the publish job. `verify` already proved
+      # this, but GitHub's "re-run failed jobs" reuses `verify`'s cached success
+      # and would otherwise re-enter this job against a registry that has moved
+      # on. npm's own immutability would reject the duplicate; this fails first,
+      # more legibly, and fails closed if the registry cannot be reached.
+      # Resumable form of INVARIANT 4. A release that published the SDK and then
+      # failed on a transient readback must be able to re-run without either
+      # republishing (npm forbids it) or someone editing the gate out. This exits
+      # 0 when the version is absent, or when it is present with BYTE-IDENTICAL
+      # content — i.e. this same release already got this far. Present with
+      # different bytes is still exit 3.
+      - name: Re-assert @frihet/sdk is not already published (resumable)
+        id: sdk_gate
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/publish-readback.mjs --assert-absent-or-identical \
+            --package "@frihet/sdk" --version "$VERSION" \
+            --tarball "./release-artifacts/frihet-sdk-${VERSION}.tgz"
+
+      # `--provenance` is the default under trusted publishing; stating it makes
+      # the intent auditable and turns "provenance could not be produced" into a
+      # failure instead of a silent downgrade. `--access public` is required for
+      # provenance on a scoped package.
+      - name: Publish @frihet/sdk
+        if: steps.sdk_gate.outputs.already_published != 'true'
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          npm publish "./release-artifacts/frihet-sdk-${VERSION}.tgz" --access public --provenance
+
+      - name: Skipping publish — this exact release is already on the registry
+        if: steps.sdk_gate.outputs.already_published == 'true'
+        run: |
+          set -euo pipefail
+          echo "@frihet/sdk is already published with identical bytes; resuming at the readback."
+
+      # INVARIANT 7: npm reporting success is a claim about a request. This is the
+      # claim about the registry's resulting state.
+      - name: Read the registry back
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/publish-readback.mjs \
+            --package "@frihet/sdk" \
+            --version "$VERSION" \
+            --tarball "./release-artifacts/frihet-sdk-${VERSION}.tgz" \
+            --require-attestations \
+            --poll
+
+  # ---------------------------------------------------------------------------
+  publish-cli:
+    name: Publish frihet (OIDC)
+    needs: [verify, publish-sdk]
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_PUBLISH_VERSION }}
+
+      - name: Assert toolchain meets the trusted-publishing floor
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          node -e '
+            const [nMaj, nMin] = process.versions.node.split(".").map(Number);
+            if (nMaj < 22 || (nMaj === 22 && nMin < 14)) {
+              console.error("Node " + process.versions.node + " < 22.14.0 — trusted publishing requires 22.14.0 or higher");
+              process.exit(1);
+            }
+            console.log("ok node " + process.versions.node);
+          '
+          NPM_VERSION="$(npm --version)"
+          node -e '
+            const v = process.argv[1].split(".").map(Number);
+            const floor = [11, 5, 1];
+            for (let i = 0; i < 3; i++) {
+              if (v[i] > floor[i]) break;
+              if (v[i] < floor[i]) {
+                console.error("npm " + process.argv[1] + " < 11.5.1 — trusted publishing requires 11.5.1 or later");
+                process.exit(1);
+              }
+            }
+            console.log("ok npm " + process.argv[1] + " (bundled with this Node, no global install)");
+          ' "$NPM_VERSION"
+
+      # INVARIANT 5: `needs: publish-sdk` proves the job finished; it does not
+      # prove the registry SERVES the SDK yet. Poll until it does, bounded, and
+      # fail rather than publish a CLI whose dependency 404s. This one requires a
+      # POSITIVE match, so `npm view` is the right tool here: a network failure
+      # produces no match and the loop keeps waiting, then fails.
+      - name: Assert the registry already serves the SDK at this version
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          for ATTEMPT in 1 2 3 4 5 6 7 8 9 10; do
+            SEEN="$(npm view "@frihet/sdk@${VERSION}" version 2>/dev/null || true)"
+            if [ "$SEEN" = "$VERSION" ]; then
+              echo "ok registry serves @frihet/sdk@${VERSION} (attempt ${ATTEMPT})"
+              exit 0
+            fi
+            echo "waiting for @frihet/sdk@${VERSION} to propagate (attempt ${ATTEMPT})"
+            sleep 15
+          done
+          echo "::error::@frihet/sdk@${VERSION} is still not served by the registry; refusing to publish a CLI that depends on it"
+          exit 1
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-tarballs
+          path: release-artifacts
+
+      - name: Verify downloaded tarballs against the recorded checksums
+        run: |
+          set -euo pipefail
+          cd release-artifacts
+          sha512sum -c checksums.txt
+
+      - name: Assert the downloaded tarball really is frihet
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/publish-readback.mjs --assert-tarball-identity \
+            --package "frihet" --version "$VERSION" \
+            --tarball "./release-artifacts/frihet-${VERSION}.tgz"
+
+      - name: Re-assert the packed CLI depends on the exact SDK version
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          DEP="$(tar -xOzf "release-artifacts/frihet-${VERSION}.tgz" package/package.json \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s).dependencies||{};process.stdout.write(String(d["@frihet/sdk"]))})')"
+          if [ "$DEP" != "$VERSION" ]; then
+            echo "::error::packed CLI depends on @frihet/sdk \"${DEP}\", expected exactly \"${VERSION}\""
+            exit 1
+          fi
+          echo "ok packed CLI depends on @frihet/sdk ${VERSION} exactly"
+
+      # INVARIANT 4, re-checked here for the same reason as in the SDK job. Only
+      # `frihet` is checked: `@frihet/sdk` is expected to be published by now —
+      # that is exactly what the propagation poll above asserted.
+      - name: Re-assert frihet is not already published (resumable)
+        id: cli_gate
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/publish-readback.mjs --assert-absent-or-identical \
+            --package "frihet" --version "$VERSION" \
+            --tarball "./release-artifacts/frihet-${VERSION}.tgz"
+
+      - name: Publish frihet
+        if: steps.cli_gate.outputs.already_published != 'true'
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          npm publish "./release-artifacts/frihet-${VERSION}.tgz" --access public --provenance
+
+      - name: Skipping publish — this exact release is already on the registry
+        if: steps.cli_gate.outputs.already_published == 'true'
+        run: |
+          set -euo pipefail
+          echo "frihet is already published with identical bytes; resuming at the readback."
+
+      - name: Read the registry back
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/publish-readback.mjs \
+            --package "frihet" \
+            --version "$VERSION" \
+            --tarball "./release-artifacts/frihet-${VERSION}.tgz" \
+            --require-attestations \
+            --expect-dependency "@frihet/sdk=${VERSION}" \
+            --poll
+
+  # ---------------------------------------------------------------------------
+  # INVARIANT 9. The readback proved the registry serves the bytes we uploaded.
+  # This proves those bytes are what this source builds, and that a stranger can
+  # actually install and run the result.
+  # ---------------------------------------------------------------------------
+  post-publish:
+    name: Strict drift + clean install from the public registry
+    needs: [verify, publish-cli]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: ${{ env.PNPM_BUILD_VERSION }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_BUILD_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          pnpm build
+
+      # Strict: no `--allow-pending`. Anything other than IN_SYNC for every
+      # package is a failed release, not a pending one.
+      - name: Publish-drift check (strict)
+        run: |
+          set -euo pipefail
+          node scripts/check-publish-drift.mjs --expect-in-sync
+
+      # MEDIUM-6: `check-publish-drift.mjs` compares `dist/**` only — by design,
+      # since a doc-only edit is not capability drift. But "the published bytes
+      # rebuild from this source" is a claim about the WHOLE tarball. So re-pack
+      # from the tag and readback the freshly packed file: its sha512 must equal
+      # the registry's `dist.integrity`, which covers the manifest, README,
+      # CHANGELOG, LICENSE and every dist file at once. Verified reproducible on
+      # main (dba101c) with the pinned toolchain before this was made a gate.
+      - name: Prove the FULL published tarballs rebuild from this tag
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          rm -rf repack
+          mkdir -p repack
+          DEST="$(pwd)/repack"
+          ( cd packages/sdk && pnpm pack --pack-destination "$DEST" )
+          ( cd packages/cli && pnpm pack --pack-destination "$DEST" )
+          node scripts/publish-readback.mjs \
+            --package "@frihet/sdk" --version "$VERSION" \
+            --tarball "./repack/frihet-sdk-${VERSION}.tgz"
+          node scripts/publish-readback.mjs \
+            --package "frihet" --version "$VERSION" \
+            --tarball "./repack/frihet-${VERSION}.tgz" \
+            --expect-dependency "@frihet/sdk=${VERSION}"
+
+      - name: Clean install from the public registry
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          WORK="$(mktemp -d)"
+          cd "$WORK"
+          npm init -y > /dev/null
+          npm i "@frihet/sdk@${VERSION}" "frihet@${VERSION}"
+
+          ACTUAL="$(npx frihet --version)"
+          if [ "$ACTUAL" != "$VERSION" ]; then
+            echo "::error::installed CLI reports version ${ACTUAL}, expected ${VERSION}"
+            exit 1
+          fi
+          echo "ok npx frihet --version -> ${ACTUAL}"
+
+          node --input-type=module -e '
+            import { CapabilityUnavailableError } from "@frihet/sdk";
+            if (typeof CapabilityUnavailableError !== "function") {
+              throw new Error("CapabilityUnavailableError is not importable from the published @frihet/sdk");
+            }
+            console.log("ok CapabilityUnavailableError imported from the published @frihet/sdk");
+          '

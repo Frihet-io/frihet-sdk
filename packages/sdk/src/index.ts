@@ -15,6 +15,8 @@ import { Channels } from './resources/channels.js';
 import { Fiscal } from './resources/fiscal.js';
 import { Search } from './resources/search.js';
 import { Banking } from './resources/banking.js';
+import { Pos } from './resources/pos.js';
+import { Kitchen } from './resources/kitchen.js';
 import type { FrihetOptions } from './types.js';
 
 export class Frihet {
@@ -40,8 +42,12 @@ export class Frihet {
   readonly fiscal: Fiscal;
   /** Workspace-scoped global search across invoices, expenses, vendors, clients, products. */
   readonly search: Search;
-  /** Connected bank accounts, transactions, categorization, matching, and reconciliation suggestions. */
+  /** Connected bank accounts, transactions, rules, categorization, matching, and reconciliation suggestions. */
   readonly banking: Banking;
+  /** Point of Sale terminals, sales, refunds, and cash-session closes. */
+  readonly pos: Pos;
+  /** Kitchen Display System (KDS) stations, menu items, and tickets. */
+  readonly kitchen: Kitchen;
 
   constructor(opts: FrihetOptions) {
     const client = new HttpClient(opts);
@@ -61,6 +67,8 @@ export class Frihet {
     this.fiscal = new Fiscal(client);
     this.search = new Search(client);
     this.banking = new Banking(client);
+    this.pos = new Pos(client);
+    this.kitchen = new Kitchen(client);
   }
 }
 
@@ -83,6 +91,8 @@ export { Channels } from './resources/channels.js';
 export { Fiscal } from './resources/fiscal.js';
 export { Search } from './resources/search.js';
 export { Banking } from './resources/banking.js';
+export { Pos } from './resources/pos.js';
+export { Kitchen } from './resources/kitchen.js';
 export { FrihetError, APIError, AuthenticationError, NotFoundError, ValidationError, ConflictError, TeamSeatLimitError, RateLimitError, TimeoutError, CapabilityUnavailableError } from './error.js';
 export type * from './types.js';
 
@@ -123,10 +133,14 @@ export type {
   BankException,
   BankRuleConditionField,
   BankRuleConditionOperator,
+  BankRuleApiConditionOperator,
   BankRuleCondition,
+  BankRuleApiCondition,
   BankRuleActionType,
   BankRuleActionConfig,
   BankRule,
+  BankRuleListParams,
+  CreateBankRuleApiParams,
   CreateBankRuleParams,
   BankRuleSimulateResult,
 } from './types/banking.js';
@@ -145,6 +159,6 @@ export type {
 
 // -- D4-C: helpers --
 export { createLeaveRequest, approveLeave, rejectLeave } from './api/leaves.js';
-export { bankRuleSimulate } from './api/banking.js';
+export { listBankRules, createBankRule, bankRuleSimulate } from './api/banking.js';
 export { periodCloseStatus } from './api/period.js';
 export { webhookSignatureVerify } from './api/webhookSignature.js';

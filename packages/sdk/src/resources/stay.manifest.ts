@@ -50,10 +50,22 @@ export const STAY_RUNTIME_MANIFEST: readonly StayManifestEntry[] = [
     status: 'live',
     queryParams: ['q', 'isActive', 'limit', 'offset'],
   },
-  { method: 'retrieveProperty', verb: 'GET', path: '/stay/properties/:id', status: 'absent' },
+  // Served via the live read-only top-level Stay route GET /v1/properties/:id
+  // (publicApi.ts + stayLegacyRootPolicy.ts: GET allowed, mutations rejected).
+  { method: 'retrieveProperty', verb: 'GET', path: '/properties/:id', status: 'live' },
   { method: 'createProperty', verb: 'POST', path: '/stay/properties', status: 'absent' },
   { method: 'updateProperty', verb: 'PATCH', path: '/stay/properties/:id', status: 'absent' },
   { method: 'deleteProperty', verb: 'DELETE', path: '/stay/properties/:id', status: 'absent' },
+
+  // ---- Guests (compliance records — live read-only routes GET /v1/guests[/:id]) ----
+  {
+    method: 'listGuests',
+    verb: 'GET',
+    path: '/guests',
+    status: 'live',
+    queryParams: ['q', 'limit', 'offset', 'cursor', 'fields'],
+  },
+  { method: 'retrieveGuest', verb: 'GET', path: '/guests/:id', status: 'live' },
 
   // ---- Reservations ----
   {

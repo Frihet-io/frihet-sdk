@@ -121,6 +121,16 @@ export interface Expense {
   irpf?: number;
   isInvestmentGood?: boolean;
   taxDeductible?: boolean;
+  /** Attached file references linked via `expenses.addAttachment()`. */
+  attachments?: ExpenseAttachment[];
+  /** Whether the expense is marked billable to a client. */
+  shouldBeInvoiced?: boolean;
+  /** Client ID the expense will be re-billed to. */
+  billableClientId?: string;
+  /** Markup percentage applied when invoicing the billable expense. */
+  markup?: number;
+  /** Invoice ID once the billable expense has been billed. */
+  billedInvoiceId?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -731,8 +741,95 @@ export interface LateFeeResult {
 }
 
 // ---------------------------------------------------------------------------
-// -- Expense billable flag
+// -- Expense attachments & billable flag (Wave-2 canonical parity)
 // ---------------------------------------------------------------------------
+
+/** Allowed MIME types for expense attachments (`publicApi.ts:EXPENSE_ATTACHMENT_ALLOWED_MIME`). */
+export type ExpenseAttachmentContentType =
+  | 'application/pdf'
+  | 'image/jpeg'
+  | 'image/jpg'
+  | 'image/png'
+  | 'image/webp'
+  | 'image/heic'
+  | 'image/heif'
+  | 'image/tiff';
+
+/** Normalized attachment metadata stored on an Expense document. */
+export interface ExpenseAttachment {
+  /** Opaque backend-issued file reference (not a local path or URL). */
+  fileId: string;
+  originalName: string;
+  contentType: ExpenseAttachmentContentType | string;
+  size: number;
+  checksumSha256?: string;
+}
+
+/**
+ * Body for `POST /v1/expenses/attachments/uploads` (`.strict()` Zod schema).
+ * Metadata-only: prepares an opaque `fileReferenceId` without transferring raw bytes.
+ */
+export interface CreateExpenseAttachmentUploadParams {
+  /** Filename only (1–255 chars); local paths are rejected. */
+  fileName: string;
+  contentType: ExpenseAttachmentContentType;
+  /** File size in bytes (1 to 10,485,760). */
+  sizeBytes: number;
+  /** Optional expense ID to scope the prepared upload reference to. */
+  expenseId?: string;
+  /** Optional 64-char hex SHA-256 checksum. */
+  checksumSha256?: string;
+}
+
+/** Response of `POST /v1/expenses/attachments/uploads`. */
+export interface ExpenseAttachmentUpload {
+  uploadId: string;
+  fileReferenceId: string;
+  /** Backward-compatible alias for `fileReferenceId`. */
+  fileId: string;
+  fileName: string;
+  originalName: string;
+  contentType: string;
+  sizeBytes: number;
+  size: number;
+  maxSizeBytes: number;
+  /** ISO datetime when the prepared reference expires. */
+  expiresAt: string;
+  status: string;
+  attach: {
+    expenseId: string | null;
+    endpoint: string;
+    body: {
+      fileReferenceId: string;
+      fileName: string;
+      contentType: string;
+      sizeBytes: number;
+      checksumSha256?: string;
+    };
+  };
+}
+
+/**
+ * Body for `POST /v1/expenses/:expenseId/attachments` (`.strict()` Zod schema).
+ * Provide either `fileReferenceId` or `fileId`, either `fileName` or `originalName`,
+ * and either `sizeBytes` or `size`.
+ */
+export interface AddExpenseAttachmentParams {
+  fileId?: string;
+  fileReferenceId?: string;
+  originalName?: string;
+  fileName?: string;
+  contentType: ExpenseAttachmentContentType;
+  size?: number;
+  sizeBytes?: number;
+  checksumSha256?: string;
+}
+
+/** Response of `POST /v1/expenses/:expenseId/attachments`. */
+export interface AddExpenseAttachmentResult {
+  expenseId: string;
+  attachment: ExpenseAttachment;
+}
 
 /**
  * Params for marking an expense billable to a client. Mirrors the `.strict()`
@@ -744,6 +841,19 @@ export interface MarkExpenseBillableParams {
   clientId: string;
   /** Optional markup percentage (0–1000). */
   markup?: number;
+}
+
+/** Response of `POST /v1/expenses/:expenseId/billable`. */
+export interface MarkExpenseBillableResult {
+  success: boolean;
+  expenseId: string;
+  clientId: string;
+}
+
+/** Response of `DELETE /v1/expenses/:expenseId/billable`. */
+export interface UnmarkExpenseBillableResult {
+  success: boolean;
+  expenseId: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1307,4 +1417,290 @@ export interface GlobalSearchResponse {
   types: GlobalSearchType[];
   truncated?: boolean;
   meta?: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// -- POS (Point of Sale — live routes in functions/src/publicApi/families/pos.ts)
+// ---------------------------------------------------------------------------
+
+export interface PosTerminal {
+  id: string;
+  name?: string;
+  locationId?: string | null;
+  status?: string;
+  isActive?: boolean;
+  activeSessionId?: string | null;
+  deletedAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+}
+
+export interface PosTerminalListParams {
+  locationId?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export type PosSalePaymentMethod =
+  | 'cash'
+  | 'card'
+  | 'card_external'
+  | 'stripe_terminal'
+  | 'transfer';
+
+/**
+ * Operator attestation required for `card_external` sales and refunds
+ * (`functions/src/pos/externalCardAttestation.ts`).
+ */
+export interface PosExternalCardAttestation {
+  approved: true;
+  /** Authorization code printed by the external bank terminal (1–32 alphanumeric/hyphen chars). */
+  approvalCode?: string | null;
+}
+
+export interface PosSaleLineInput {
+  productId: string;
+  sku: string;
+  name: string;
+  quantity: number;
+  /** Integer cents supplied by the POS and durably bound into the command. */
+  unitPriceCents: number;
+  /** Tax percentage (0–100). */
+  taxRate: number;
+  /** Integer discount cents. */
+  discountCents: number;
+  note?: string | null;
+}
+
+export interface PosSaleTotals {
+  subtotalCents: number;
+  taxCents: number;
+  discountCents: number;
+  tipCents: number;
+  totalCents: number;
+}
+
+export interface PosSale {
+  id: string;
+  terminalId?: string;
+  cashSessionId?: string;
+  saleNumber?: string;
+  status?: string;
+  paymentMethod?: PosSalePaymentMethod;
+  lines?: PosSaleLineInput[];
+  totals?: PosSaleTotals;
+  totalCents?: number;
+  currency?: string;
+  fiscalHash?: string | null;
+  qrUrl?: string | null;
+  soldAt?: string;
+  deletedAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+}
+
+export interface PosSaleListParams {
+  terminalId?: string;
+  status?: string;
+  /** ISO 8601 lower bound on `soldAt`. */
+  from?: string;
+  /** ISO 8601 upper bound on `soldAt`. */
+  to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * Body for `POST /v1/pos/sales` (`functions/src/pos/saleCreateCore.ts:PosSaleCreateInput`).
+ *
+ * The backend binds `clientReferenceId` to the `Idempotency-Key` header. If
+ * omitted, the SDK generates a UUID v4 `Idempotency-Key` and the server sets
+ * `clientReferenceId` to it; if provided, the SDK forwards it as `Idempotency-Key`
+ * unless an explicit `opts.idempotencyKey` is also passed.
+ */
+export interface CreatePosSaleParams {
+  terminalId: string;
+  cashSessionId: string;
+  lines: PosSaleLineInput[];
+  paymentMethod: PosSalePaymentMethod;
+  externalCardAttestation?: PosExternalCardAttestation | null;
+  /** Cash tendered in integer cents. */
+  cashTendered?: number | null;
+  /** Tip in integer cents. */
+  tipCents?: number | null;
+  customerNif?: string | null;
+  customerAddress?: string | null;
+  customerName?: string | null;
+  customerEmail?: string | null;
+  fiscalSeries?: 'A' | 'B' | 'C';
+  clientReferenceId?: string;
+}
+
+/** Response of `POST /v1/pos/sales`. */
+export interface PosSaleCreateResult {
+  status: 'completed' | 'pending_payment';
+  saleId: string;
+  saleNumber: string;
+  fiscalHash: string | null;
+  qrUrl: string | null;
+  totals: PosSaleTotals;
+  paymentIntentClientSecret?: string | null;
+}
+
+/**
+ * Body for `POST /v1/pos/sales/:id/refund` (`functions/src/publicApi/families/pos.ts:refundSale`).
+ * Omit `amountCents` for a full refund; supply a positive integer for a partial refund.
+ */
+export interface RefundPosSaleParams {
+  amountCents?: number;
+  reason?: string;
+  refundMethod?: 'cash' | 'card_external';
+  externalCardAttestation?: PosExternalCardAttestation | null;
+  clientReferenceId?: string;
+}
+
+/** Response of `POST /v1/pos/sales/:id/refund`. */
+export interface PosSaleRefundResult {
+  id: string;
+  saleId: string;
+  status: 'succeeded';
+  amountCents: number;
+  currency: 'EUR' | string;
+  reason: string;
+  createdAt: string;
+  creditNoteId: string | null;
+  creditNoteHash: string | null;
+  creditNoteStatus: 'draft' | string;
+  refundedAmountEur: number;
+  newStatus: 'refunded' | 'partially_refunded';
+}
+
+/** Body for `POST /v1/pos/cash-sessions/:id/close`. */
+export interface CloseCashSessionParams {
+  /** Counted cash in drawer in non-negative integer cents. */
+  declaredCashCents: number;
+  /** Counted card settlements in non-negative integer cents. */
+  declaredCardCents: number;
+  notes?: string | null;
+}
+
+/** Response of `POST /v1/pos/cash-sessions/:id/close`. */
+export interface CashSessionCloseResult {
+  sessionId: string;
+  zReportId: string;
+  closingDeltaCents: number;
+  closedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// -- Kitchen / KDS (live routes in functions/src/publicApi/families/kitchen.ts)
+// ---------------------------------------------------------------------------
+
+export type KitchenTicketStatus =
+  | 'on_hold'
+  | 'queued'
+  | 'preparing'
+  | 'ready'
+  | 'served'
+  | 'voided';
+
+export type KitchenTicketPriority = 'normal' | 'rush';
+
+export interface KitchenStation {
+  id: string;
+  name?: string;
+  sortOrder?: number;
+  isActive?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+}
+
+export interface KitchenStationListParams {
+  limit?: number;
+  offset?: number;
+}
+
+export interface KitchenMenuItem {
+  id: string;
+  name?: string;
+  category?: string;
+  available?: boolean;
+  priceCents?: number;
+  stationIds?: string[];
+  createdAt?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+}
+
+export interface KitchenMenuItemListParams {
+  /** Case-insensitive substring match against menu item name. */
+  q?: string;
+  /** Maps to `available` on the menu item document. */
+  isActive?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface KitchenTicket {
+  id: string;
+  status?: KitchenTicketStatus;
+  priority?: KitchenTicketPriority;
+  holdReason?: string;
+  courierEtaMinutes?: number;
+  stationIds?: string[];
+  itemCount?: number;
+  orderNumber?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+}
+
+export interface KitchenTicketListParams {
+  status?: KitchenTicketStatus;
+  stationId?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * Body for `PATCH /v1/kitchen/tickets/:id` (`.strict()` Zod schema in
+ * `functions/src/publicApi/families/kitchen.ts:ticketPatchSchema`).
+ * At least one field must be provided.
+ */
+export interface UpdateKitchenTicketParams {
+  status?: KitchenTicketStatus;
+  priority?: KitchenTicketPriority;
+  holdReason?: string;
+  courierEtaMinutes?: number;
+  stationIds?: string[];
+  itemCount?: number;
+}
+
+// ---------------------------------------------------------------------------
+// -- Stay Guests (live read-only compatibility routes: GET /v1/guests[/:id])
+// ---------------------------------------------------------------------------
+
+/**
+ * Guest compliance record returned by `GET /v1/guests` and `GET /v1/guests/:id`
+ * (`publicApi.ts:560-573, 8152-8165`). PII fields (`documentNumber`,
+ * `documentType`, `nationality`) are redacted (`null`) by the API.
+ */
+export interface StayGuest {
+  id: string;
+  guestName: string;
+  documentType: string | null;
+  documentNumber: string | null;
+  nationality: string | null;
+  reservationId?: string;
+  documentVerified?: boolean;
+  signatureCaptured?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface StayGuestListParams extends ListParams {
+  q?: string;
 }

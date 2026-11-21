@@ -13,15 +13,21 @@ import {
   approveLeave,
   rejectLeave,
 } from '../api/leaves.js';
-import { bankRuleSimulate } from '../api/banking.js';
+import {
+  bankRuleSimulate,
+  listBankRules,
+  createBankRule,
+} from '../api/banking.js';
 import { periodCloseStatus } from '../api/period.js';
 import { webhookSignatureVerify } from '../api/webhookSignature.js';
+import { CapabilityUnavailableError } from '../error.js';
 import type {
   CreateLeaveRequestParams,
   LeaveRequest,
 } from '../types/hr.js';
 import type {
-  BankRuleSimulateResult,
+  BankRule,
+  CreateBankRuleApiParams,
   CreateBankRuleParams,
 } from '../types/banking.js';
 import type { PeriodClose } from '../types/period.js';
@@ -106,10 +112,9 @@ describe('rejectLeave', () => {
 
 // -- Banking ----------------------------------------------------------------
 
-describe('bankRuleSimulate', () => {
-  it('POSTs /bank/rules/simulate and returns matched count + sample', async () => {
-    const result: BankRuleSimulateResult = { matched: 3, sample: [] };
-    const { post, client } = mockPostClient(result);
+describe('bankRuleSimulate (fail-closed phantom route)', () => {
+  it('rejects locally with CapabilityUnavailableError and never dispatches HTTP', async () => {
+    const { post, client } = mockPostClient({ matched: 0, sample: [] });
 
     const rule: CreateBankRuleParams = {
       name: 'AWS hosting',
@@ -120,9 +125,55 @@ describe('bankRuleSimulate', () => {
       actionConfig: { category: 'hosting' },
     };
 
-    const got = await bankRuleSimulate(client, rule);
-    expect(post).toHaveBeenCalledWith('/bank/rules/simulate', rule, undefined);
-    expect(got.matched).toBe(3);
+    const err = await bankRuleSimulate(client, rule).catch(e => e) as CapabilityUnavailableError;
+    expect(err).toBeInstanceOf(CapabilityUnavailableError);
+    expect(err.reason).toBe('absent');
+    expect(err.capability).toContain('/bank/rules/simulate');
+    expect(post).not.toHaveBeenCalled();
+  });
+});
+
+describe('listBankRules & createBankRule (canonical /v1/banking/rules)', () => {
+  it('listBankRules GETs /banking/rules with pagination/filter params', async () => {
+    const page = { data: [] as BankRule[], total: 0, limit: 50, offset: 0 };
+    const getPage = vi.fn().mockResolvedValue(page);
+
+    const got = await listBankRules({ getPage }, { isActive: true, limit: 10, offset: 0 });
+    expect(getPage).toHaveBeenCalledWith(
+      '/banking/rules',
+      { isActive: true, limit: 10, offset: 0 },
+      undefined,
+    );
+    expect(got).toEqual(page);
+  });
+
+  it('createBankRule POSTs /banking/rules with bankConditions payload', async () => {
+    const created: BankRule = {
+      id: 'rule_1',
+      name: 'AWS hosting',
+      priority: 100,
+      isActive: true,
+      conditions: [],
+      bankConditions: [{ field: 'counterparty', operator: 'contains', value: 'AMAZON WEB' }],
+      action: 'categorize_expense',
+      actionConfig: { category: 'hosting' },
+      createdAt: '2026-11-21T10:00:00Z',
+      updatedAt: '2026-11-21T10:00:00Z',
+    };
+    const { post, client } = mockPostClient(created);
+
+    const rule: CreateBankRuleApiParams = {
+      name: 'AWS hosting',
+      priority: 100,
+      isActive: true,
+      bankConditions: [{ field: 'counterparty', operator: 'contains', value: 'AMAZON WEB' }],
+      action: 'categorize_expense',
+      actionConfig: { category: 'hosting' },
+    };
+
+    const got = await createBankRule(client, rule);
+    expect(post).toHaveBeenCalledWith('/banking/rules', rule, undefined);
+    expect(got).toEqual(created);
   });
 });
 
@@ -132,12 +183,12 @@ describe('periodCloseStatus', () => {
   it('GETs /periods/current when no id given', async () => {
     const closed: PeriodClose = {
       id: 'pc_1',
-      granularity: 'month',
-      period: '2026-03',
-      from: '2026-03-01',
-      to: '2026-03-31',
+      granularity: 'year',
+      period: '2026',
+      from: '2026-01-01',
+      to: '2026-12-31',
       status: 'closed',
-      createdAt: '2026-04-01T00:00:00Z',
+      createdAt: '2027-01-01T00:00:00Z',
     };
     const { get, client } = mockGetClient(closed);
     const got = await periodCloseStatus(client);
@@ -145,15 +196,21 @@ describe('periodCloseStatus', () => {
     expect(got?.status).toBe('closed');
   });
 
-  it('GETs /periods/:id when id given (URL-encoded)', async () => {
+  it('GETs /periods/:year when 4-digit fiscal year given', async () => {
     const { get, client } = mockGetClient(null);
-    await periodCloseStatus(client, '2026-Q1');
-    expect(get).toHaveBeenCalledWith('/periods/2026-Q1', undefined, undefined);
+    await periodCloseStatus(client, '2026');
+    expect(get).toHaveBeenCalledWith('/periods/2026', undefined, undefined);
+  });
+
+  it('GETs /periods/current when "current" is explicitly passed', async () => {
+    const { get, client } = mockGetClient(null);
+    await periodCloseStatus(client, 'current');
+    expect(get).toHaveBeenCalledWith('/periods/current', undefined, undefined);
   });
 
   it('returns null when API responds with null (period is open)', async () => {
     const { client } = mockGetClient<PeriodClose | null>(null);
-    const got = await periodCloseStatus(client, '2026-05');
+    const got = await periodCloseStatus(client, '2025');
     expect(got).toBeNull();
   });
 });

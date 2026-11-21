@@ -16,14 +16,18 @@ export interface HttpClientGettable {
 }
 
 /**
- * Retrieve the period close status.
+ * Retrieve the fiscal-year period close status.
  *
- *  - `periodCloseStatus(client)` returns the most recently closed period
- *    (status === 'closed') or `null` if none.
- *  - `periodCloseStatus(client, '2026-03')` returns the close record for
- *    that specific period id, or `null` if the period is still open.
+ * The Frihet backend (`functions/src/publicApi/families/periods.ts`) accepts
+ * ONLY `'current'` or a 4-digit fiscal year matching `/^\d{4}$/` (e.g. `'2026'`,
+ * `'2025'`). Month/quarter ids such as `'2026-03'` or `'2026-Q1'` return 404.
  *
- * Maps to `GET /v1/periods/{periodId?}`.
+ *  - `periodCloseStatus(client)` or `periodCloseStatus(client, 'current')`
+ *    queries `GET /v1/periods/current` for the active workspace fiscal year.
+ *  - `periodCloseStatus(client, '2026')` queries `GET /v1/periods/2026` for
+ *    that fiscal year.
+ *
+ * Maps to `GET /v1/periods/{current|YYYY}`.
  */
 export function periodCloseStatus(
   client: HttpClientGettable,

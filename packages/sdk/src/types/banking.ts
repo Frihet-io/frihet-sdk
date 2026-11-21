@@ -6,23 +6,179 @@
  */
 
 // ---------------------------------------------------------------------------
-// Bank transactions (lean shape — full transactions live behind /v1/bank/...)
+// Bank accounts & transactions (/v1/banking/*)
 // ---------------------------------------------------------------------------
+
+export interface BankCounterparty {
+  name: string;
+  accountNumber?: string;
+  iban?: string;
+}
+
+export type BankTransactionStatus =
+  | 'raw'
+  | 'recognized'
+  | 'matched'
+  | 'categorized'
+  | 'excluded';
+
+export interface BankMatchedReference {
+  referenceType: 'invoice' | 'expense';
+  referenceId: string;
+  amount: number;
+}
+
+/**
+ * Connected bank account (backed by the `bankConnections` collection).
+ * Mirrors GET /v1/banking/accounts and GET /v1/banking/accounts/:accountId.
+ */
+export interface BankAccount {
+  id: string;
+  /** saltedge | tink | truelayer | yodlee | revolut | manual */
+  provider: string | null;
+  bankName: string | null;
+  accountName: string | null;
+  /** Last 4 digits for display. */
+  accountNumber: string | null;
+  /** Masked IBAN. */
+  iban: string | null;
+  currency: string | null;
+  isActive: boolean;
+  /** ISO datetime */
+  lastSyncAt: string | null;
+  /** ISO datetime */
+  createdAt: string | null;
+  /** ISO datetime */
+  updatedAt: string | null;
+}
+
+export interface BankAccountListParams {
+  provider?: string;
+  isActive?: boolean;
+  limit?: number;
+  offset?: number;
+}
 
 export interface BankTransaction {
   id: string;
+  /** ID of the owning bank account (connection). */
+  connectionId?: string;
+  /** Provider transaction ID (`manual-*` for API-created entries). */
+  transactionId?: string;
   /** ISO date: YYYY-MM-DD */
   date: string;
   description: string;
-  /** Counterparty name (creditor or debtor) when present. */
-  counterparty?: string;
-  reference?: string;
-  /** Amount in EUR. Positive = credit to account, negative = debit. */
+  /**
+   * Counterparty details (`BankCounterparty` from `/v1/banking/transactions`,
+   * or a plain string in lean D4-C snapshots).
+   */
+  counterparty?: BankCounterparty | string | null;
+  reference?: string | null;
+  category?: string | null;
+  categoryNotes?: string;
+  /** Amount in account currency. Positive = income/credit, negative = expense/debit. */
   amount: number;
   currency?: string;
+  /** Legacy alias for `connectionId`. */
   accountId?: string;
+  reconciled?: boolean;
+  reconciledWith?: 'invoice' | 'expense' | null;
+  reconciledId?: string | null;
   /** ISO datetime */
-  createdAt?: string;
+  reconciledAt?: string | null;
+  status?: BankTransactionStatus;
+  source?: string | null;
+  createdVia?: string;
+  matchedVia?: string;
+  matchNotes?: string;
+  matchedReferences?: BankMatchedReference[];
+  /** ISO datetime */
+  createdAt?: string | null;
+  /** ISO datetime */
+  updatedAt?: string | null;
+}
+
+export interface BankTransactionListParams {
+  /** Filter by bank account (connection) ID. */
+  accountId?: string;
+  /** Start date (ISO YYYY-MM-DD). */
+  from?: string;
+  /** End date (ISO YYYY-MM-DD). */
+  to?: string;
+  status?: BankTransactionStatus;
+  category?: string;
+  reconciled?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * Body for POST /v1/banking/transactions (`.strict()` Zod schema).
+ * Reconciliation state is force-initialised server-side (`reconciled: false`,
+ * `status: 'raw'`).
+ */
+export interface CreateBankTransactionParams {
+  /** Owning bank account (connection) ID in the caller's workspace. */
+  accountId: string;
+  /** Non-zero finite number. Positive = income, negative = expense. */
+  amount: number;
+  /** ISO date (YYYY-MM-DD). */
+  date: string;
+  description: string;
+  /** ISO 4217 3-letter currency code. Defaults to account currency or EUR. */
+  currency?: string;
+  reference?: string;
+  category?: string;
+  counterparty?: BankCounterparty;
+}
+
+/** Body for PATCH /v1/banking/transactions/:transactionId/categorize (`.strict()`). */
+export interface CategorizeBankTransactionParams {
+  category: string;
+  notes?: string;
+}
+
+/** Body for POST /v1/banking/transactions/:transactionId/match (`.strict()`). */
+export interface MatchBankTransactionParams {
+  documentId: string;
+  documentType: 'invoice' | 'expense';
+  notes?: string;
+}
+
+export type ReconciliationSuggestionSignal =
+  | 'amount'
+  | 'date'
+  | 'reference'
+  | 'counterparty';
+
+export interface ReconciliationSuggestionBreakdown {
+  signal: ReconciliationSuggestionSignal;
+  points: number;
+  similarity: number;
+  reason: string;
+}
+
+export interface ReconciliationSuggestion {
+  documentType: 'invoice' | 'expense';
+  documentId: string;
+  score: number;
+  confidence: number;
+  suggested: boolean;
+  amountDiff: number;
+  dateDiff: number;
+  reasons: string[];
+  breakdown: ReconciliationSuggestionBreakdown[];
+}
+
+export interface BankTransactionSuggestionsParams {
+  /** Maximum candidates to return (1-10, default 5). */
+  limit?: number;
+}
+
+export interface BankTransactionSuggestionsResult {
+  transactionId: string;
+  limit: number;
+  suggestions: ReconciliationSuggestion[];
 }
 
 // ---------------------------------------------------------------------------

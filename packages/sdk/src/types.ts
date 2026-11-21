@@ -24,6 +24,7 @@ export interface Page<T> {
   total: number;
   limit: number;
   offset: number;
+  hasMore?: boolean;
   nextCursor?: string;
 }
 
@@ -1152,4 +1153,158 @@ export interface GestoriaAgingParams {
   workspaceIds: string[];
   asOf?: string;
   bustCache?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// -- E-Invoicing, FACe, TicketBAI & VeriFactu (Wave-1 canonical parity)
+// ---------------------------------------------------------------------------
+//
+// Shapes pinned verbatim to Frihet-ERP functions/src/openapi.json and
+// functions/src/publicApi.ts (lines 1968-2003, 3885-3934, 7227-7725).
+
+export type EInvoiceFormat =
+  | 'Facturae'
+  | 'XRechnung-CII'
+  | 'XRechnung-UBL'
+  | 'Factur-X'
+  | 'FatturaPA'
+  | 'PEPPOL-BIS-3'
+  | 'FA-2-KSeF'
+  | 'UBL'
+  | 'CII';
+
+/** Body for POST /v1/invoices/:id/einvoice/export (`.strict()` Zod schema). */
+export interface EInvoiceExportParams {
+  format: EInvoiceFormat;
+  /** Sign with XAdES-EPES. Supported only when `format === 'Facturae'`. */
+  signed?: boolean;
+}
+
+export interface EInvoiceValidationIssue {
+  severity: 'error' | 'warning' | 'info';
+  ruleId: string;
+  message: string;
+  i18nKey?: string;
+}
+
+export interface EInvoiceExportResult {
+  xml: string;
+  contentType: string;
+  filename: string;
+  signed: boolean;
+  format: EInvoiceFormat;
+  warnings: EInvoiceValidationIssue[];
+}
+
+export type FaceMode = 'mock' | 'sandbox' | 'production';
+
+/** Body for POST /v1/invoices/:id/face/submit (`.strict()` Zod schema). */
+export interface FaceSubmitParams {
+  mode?: FaceMode;
+  correo?: string;
+}
+
+export interface FaceSubmitResult {
+  status: string;
+  numeroRegistro: string;
+  codigo: string;
+  descripcion: string;
+  /** Present and true when returning a prior accepted submission. */
+  idempotent?: boolean;
+}
+
+export interface FaceStatusResult {
+  numeroRegistro: string;
+  estadoTramitacion: string | null;
+  codigo: string | null;
+  descripcion: string | null;
+  motivo: string | null;
+}
+
+/** Body for POST /v1/invoices/:id/ticketbai/submit (`.strict()` Zod schema). */
+export interface TicketBaiSubmitParams {
+  sandbox?: boolean;
+}
+
+export interface TicketBaiSubmitResult {
+  accepted: boolean;
+  csv: string;
+  tbaiIdentifier: string;
+  qrUrl: string;
+  /** Present and true when returning a prior accepted submission. */
+  idempotent?: boolean;
+}
+
+export interface TicketBaiStatusResult {
+  accepted: boolean;
+  csv: string;
+  tbaiIdentifier: string;
+  estado: string;
+  qrUrl: string | null;
+  submittedAt: string | null;
+  errors: string[] | null;
+}
+
+export type VerifactuSubmissionStatus =
+  | 'pending'
+  | 'submitted'
+  | 'accepted'
+  | 'rejected'
+  | 'error'
+  | 'halted';
+
+/** AEAT warning returned when a record is accepted with errors (`AceptadoConErrores`). */
+export interface VerifactuAeatWarning {
+  code?: string;
+  description?: string;
+}
+
+/** Response of GET /v1/fiscal/verifactu/:invoiceId/status (publicApi.ts:3889-3934). */
+export interface VerifactuStatusResult {
+  invoiceId: string;
+  status: VerifactuSubmissionStatus;
+  accepted: boolean;
+  csv: string | null;
+  submittedAt: string | null;
+  retryCount: number;
+  lastError: string | null;
+  sandbox: boolean;
+  aeatWarnings: VerifactuAeatWarning[];
+}
+
+// ---------------------------------------------------------------------------
+// -- Global Search (GET /v1/search/global)
+// ---------------------------------------------------------------------------
+
+export type GlobalSearchType = 'invoices' | 'expenses' | 'vendors' | 'clients' | 'products';
+
+export interface GlobalSearchParams {
+  /** Resource types to search (comma-separated string or array). Defaults to all 5 server-side. */
+  types?: GlobalSearchType[] | string;
+  /** Maximum results to return (1-50, default 25). */
+  limit?: number;
+  /** Pagination offset (0-1000, default 0). */
+  offset?: number;
+}
+
+export interface GlobalSearchResult {
+  type: GlobalSearchType;
+  id: string;
+  label: string;
+  secondary: string | null;
+  date: string | null;
+  amount: number | null;
+  status: string | null;
+}
+
+export interface GlobalSearchResponse {
+  data: GlobalSearchResult[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  query: string;
+  types: GlobalSearchType[];
+  truncated?: boolean;
+  meta?: Record<string, unknown>;
 }

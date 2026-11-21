@@ -233,25 +233,59 @@ export interface BankException {
 
 export type BankRuleConditionField = 'description' | 'reference' | 'amount' | 'counterparty';
 
+/**
+ * Legacy D4-C operator union retained for source compatibility.
+ * For canonical `POST /v1/banking/rules`, use {@link BankRuleApiConditionOperator}.
+ */
 export type BankRuleConditionOperator =
   | 'contains'
   | 'equals'
+  | 'exact'
   | 'starts_with'
   | 'ends_with'
   | 'greater_than'
   | 'less_than'
   | 'between'
+  | 'amount_above'
+  | 'amount_below'
+  | 'amount_between'
   | 'regex';
 
 /**
- * Condition evaluated against a bank transaction by the new rules engine.
+ * Canonical operator enum accepted by `POST /v1/banking/rules`
+ * (`functions/src/banking/bankRuleCreate.ts:BANK_RULE_OPERATORS`).
+ */
+export type BankRuleApiConditionOperator =
+  | 'contains'
+  | 'exact'
+  | 'starts_with'
+  | 'ends_with'
+  | 'regex'
+  | 'amount_above'
+  | 'amount_below'
+  | 'amount_between';
+
+/**
+ * Condition evaluated against a bank transaction by the rules engine.
  * Mirrors `BankRuleCondition` in apps/erp/services/bankRulesService.ts.
  */
 export interface BankRuleCondition {
   field: BankRuleConditionField;
   operator: BankRuleConditionOperator;
   value: string;
-  /** Upper bound for the `between` operator. */
+  /** Upper bound for the `between` / `amount_between` operator. */
+  valueTo?: string;
+}
+
+/**
+ * Condition accepted by `POST /v1/banking/rules`
+ * (`functions/src/banking/bankRuleCreate.ts:BankRuleConditionDoc`).
+ */
+export interface BankRuleApiCondition {
+  field: BankRuleConditionField;
+  operator: BankRuleApiConditionOperator;
+  value: string;
+  /** Numeric upper bound, required when `operator === 'amount_between'`. */
   valueTo?: string;
 }
 
@@ -277,11 +311,9 @@ export interface BankRuleActionConfig {
 }
 
 /**
- * Bank rule. Mirrors `BankRule` in apps/erp/services/bankRulesService.ts.
- *
- * The SDK exposes the new-engine shape (conditions on bank transactions,
- * single primary action). Legacy expense-matching rules remain server-side
- * and are not part of the public SDK surface.
+ * Bank rule returned by `GET /v1/banking/rules` and `POST /v1/banking/rules`.
+ * Mirrors `BankRuleDoc` in `functions/src/banking/bankRuleCreate.ts` and
+ * `BankRule` in `apps/erp/services/bankRulesService.ts`.
  */
 export interface BankRule {
   id: string;
@@ -289,13 +321,20 @@ export interface BankRule {
   /** Higher = checked first. */
   priority: number;
   isActive: boolean;
+  /** New-engine conditions executed by the live evaluator. */
+  bankConditions?: BankRuleApiCondition[];
+  /** Legacy conditions array (present on persisted docs for UI compatibility). */
   conditions: BankRuleCondition[];
   /** How to combine conditions when there are multiple. */
   conditionLogic?: 'and' | 'or';
   action: BankRuleActionType;
   actionConfig?: BankRuleActionConfig;
+  /** Legacy enabled flag mirrored with `isActive` on persisted docs. */
+  enabled?: boolean;
   /** Whether matched transactions are auto-applied without user confirmation. */
   autoApply?: boolean;
+  /** Legacy match counter. */
+  matchCount?: number;
   /** Number of transactions this rule has been applied to. */
   timesApplied?: number;
   /** ISO datetime */
@@ -306,6 +345,41 @@ export interface BankRule {
   updatedAt: string;
 }
 
+export interface BankRuleListParams {
+  isActive?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * Canonical request body for `POST /v1/banking/rules`
+ * (`functions/src/banking/bankRuleCreate.ts:validateAndBuildBankRule`).
+ */
+export interface CreateBankRuleApiParams {
+  name: string;
+  /** Non-empty array of conditions in the live evaluator vocabulary. */
+  bankConditions: BankRuleApiCondition[];
+  action: BankRuleActionType;
+  /**
+   * Action configuration. Required fields by action:
+   * - `categorize_expense`: `category`
+   * - `match_client`: `clientId`
+   * - `create_expense`: `expenseDefaults` (at least one valid field)
+   */
+  actionConfig?: BankRuleActionConfig;
+  /** Evaluation priority (higher = checked first). Defaults to `0`. */
+  priority?: number;
+  /** Defaults to `true`. */
+  isActive?: boolean;
+  /** Defaults to `false`. */
+  autoApply?: boolean;
+}
+
+/**
+ * Legacy D4-C create params type retained for source compatibility with
+ * deprecated {@link bankRuleSimulate}. For `POST /v1/banking/rules`, use
+ * {@link CreateBankRuleApiParams}.
+ */
 export type CreateBankRuleParams = Omit<
   BankRule,
   'id' | 'timesApplied' | 'lastAppliedAt' | 'createdAt' | 'updatedAt'

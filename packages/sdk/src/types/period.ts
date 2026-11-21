@@ -15,7 +15,7 @@ export interface PeriodClose {
   id: string;
   /** Granularity of the period. */
   granularity: PeriodGranularity;
-  /** Period identifier — `2026-03` (month), `2026-Q1` (quarter), `2026` (year). */
+  /** Fiscal-year period identifier accepted by `GET /v1/periods/:id` (4-digit year, e.g. `2026`). */
   period: string;
   /** Period start, ISO date YYYY-MM-DD. */
   from: string;

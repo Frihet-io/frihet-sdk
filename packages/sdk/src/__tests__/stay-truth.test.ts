@@ -50,6 +50,8 @@ const INVOKERS: Record<string, (stays: Stays) => Promise<unknown>> = {
   createProperty: s => s.createProperty({ name: 'Apt Centro', type: 'apartment' }),
   updateProperty: s => s.updateProperty('prop_1', { name: 'Apt Norte' }),
   deleteProperty: s => s.deleteProperty('prop_1'),
+  listGuests: s => s.listGuests(),
+  retrieveGuest: s => s.retrieveGuest('guest_1'),
   listReservations: s => s.listReservations(),
   retrieveReservation: s => s.retrieveReservation('res_1'),
   createReservation: s => s.createReservation({
@@ -312,5 +314,73 @@ describe('Stays runtime-truth gating (mocked fetch)', () => {
     mockFetch.mockResolvedValueOnce(errorResponse(404, 'not_found', 'Reservation not found'));
 
     await expect(stays.retrieveReservation('res_missing')).rejects.toThrow(NotFoundError);
+  });
+
+  // --- LIVE: retrieveProperty (GET /properties/:id) ---
+
+  it('retrieveProperty sends GET /properties/:id and unwraps the {data} envelope', async () => {
+    const property = { id: 'prop_7', name: 'Villa Mar', type: 'villa', status: 'Active' };
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: property }));
+
+    const result = await stays.retrieveProperty('prop_7');
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(new URL(url).pathname).toBe('/v1/properties/prop_7');
+    expect(opts.method).toBe('GET');
+    expect(result).toEqual(property);
+  });
+
+  // --- LIVE: listGuests & retrieveGuest (GET /guests[/:id]) ---
+
+  it('listGuests sends GET /guests with allowlisted query params', async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        data: [{ id: 'g_1', guestName: 'Ada', documentType: null, documentNumber: null, nationality: null }],
+        total: 1,
+        limit: 10,
+        offset: 0,
+      }),
+    );
+
+    const page = await stays.listGuests({ q: 'Ada', limit: 10, offset: 0 });
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(new URL(url).pathname).toBe('/v1/guests');
+    expect(opts.method).toBe('GET');
+    expect(queryParamNames(url)).toEqual(['limit', 'offset', 'q']);
+    expect(page.data[0]!.guestName).toBe('Ada');
+  });
+
+  it('listGuests rejects an unsupported filter before dispatching HTTP', async () => {
+    const error = await stays.listGuests({ bogus: 'x' } as any)
+      .catch(e => e) as CapabilityUnavailableError;
+
+    expect(error).toBeInstanceOf(CapabilityUnavailableError);
+    expect(error.capability).toContain('"bogus"');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('retrieveGuest sends GET /guests/:id and unwraps the {data} envelope', async () => {
+    const guest = {
+      id: 'g_42',
+      guestName: 'Ada',
+      documentType: null,
+      documentNumber: null,
+      nationality: null,
+      reservationId: 'res_42',
+      documentVerified: true,
+      signatureCaptured: true,
+    };
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: guest }));
+
+    const result = await stays.retrieveGuest('g_42');
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [url, opts] = mockFetch.mock.calls[0]!;
+    expect(new URL(url).pathname).toBe('/v1/guests/g_42');
+    expect(opts.method).toBe('GET');
+    expect(result).toEqual(guest);
   });
 });

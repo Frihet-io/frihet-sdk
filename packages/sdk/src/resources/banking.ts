@@ -3,11 +3,14 @@ import type { Page, RequestOptions } from '../types.js';
 import type {
   BankAccount,
   BankAccountListParams,
+  BankRule,
+  BankRuleListParams,
   BankTransaction,
   BankTransactionListParams,
   BankTransactionSuggestionsParams,
   BankTransactionSuggestionsResult,
   CategorizeBankTransactionParams,
+  CreateBankRuleApiParams,
   CreateBankTransactionParams,
   MatchBankTransactionParams,
 } from '../types/banking.js';
@@ -117,5 +120,31 @@ export class Banking {
       params as Record<string, string | number | boolean | undefined>,
       opts,
     );
+  }
+
+  /**
+   * List workspace bank rules ordered by priority descending
+   * (`GET /v1/banking/rules`).
+   */
+  listRules(
+    params?: BankRuleListParams,
+    opts?: RequestOptions,
+  ): Promise<Page<BankRule>> {
+    return this._client.getPage(
+      '/banking/rules',
+      params as Record<string, string | number | boolean | undefined>,
+      opts,
+    );
+  }
+
+  /**
+   * Create a workspace bank rule in the live evaluator vocabulary
+   * (`POST /v1/banking/rules`).
+   */
+  createRule(
+    params: CreateBankRuleApiParams,
+    opts?: RequestOptions,
+  ): Promise<BankRule> {
+    return this._client.post('/banking/rules', params, opts);
   }
 }

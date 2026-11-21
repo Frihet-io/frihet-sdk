@@ -128,26 +128,20 @@ await approveLeave(client, req.id, 'Cobertura confirmada');
 // or: await rejectLeave(client, req.id, 'Coincide con cierre fiscal');
 ```
 
-## Banking (exceptions + rules)
+## Banking (accounts, transactions, rules)
 
 ```typescript
-import {
-  bankRuleSimulate,
-  type BankException,
-  type BankExceptionStatus,
-  type BankRule,
-  type CreateBankRuleParams,
-} from '@frihet/sdk';
+const accounts = await frihet.banking.listAccounts({ isActive: true });
+const rules = await frihet.banking.listRules({ isActive: true });
 
-const draft: CreateBankRuleParams = {
+const created = await frihet.banking.createRule({
   name: 'AWS hosting',
   priority: 100,
   isActive: true,
-  conditions: [{ field: 'counterparty', operator: 'contains', value: 'AMAZON WEB' }],
+  bankConditions: [{ field: 'counterparty', operator: 'contains', value: 'AMAZON WEB' }],
   action: 'categorize_expense',
   actionConfig: { category: 'hosting' },
-};
-const { matched, sample } = await bankRuleSimulate(client, draft);
+});
 ```
 
 ## Period close
@@ -155,8 +149,8 @@ const { matched, sample } = await bankRuleSimulate(client, draft);
 ```typescript
 import { periodCloseStatus, type PeriodClose } from '@frihet/sdk';
 
-const current = await periodCloseStatus(client);          // most recent close
-const march = await periodCloseStatus(client, '2026-03'); // specific period
+const current = await periodCloseStatus(client);       // current fiscal year (/periods/current)
+const fy2026 = await periodCloseStatus(client, '2026'); // specific 4-digit fiscal year (/periods/2026)
 ```
 
 ## Configuration

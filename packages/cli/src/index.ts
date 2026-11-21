@@ -8,6 +8,9 @@ import { productsCommand } from './commands/products.js';
 import { vendorsCommand } from './commands/vendors.js';
 import { webhooksCommand } from './commands/webhooks.js';
 import { statusCommand } from './commands/status.js';
+import { bankingCommand } from './commands/banking.js';
+import { fiscalCommand } from './commands/fiscal.js';
+import { searchCommand } from './commands/search.js';
 
 declare const __CLI_VERSION__: string;
 
@@ -27,5 +30,8 @@ program.addCommand(productsCommand);
 program.addCommand(vendorsCommand);
 program.addCommand(webhooksCommand);
 program.addCommand(statusCommand);
+program.addCommand(bankingCommand);
+program.addCommand(fiscalCommand);
+program.addCommand(searchCommand);
 
 program.parse();

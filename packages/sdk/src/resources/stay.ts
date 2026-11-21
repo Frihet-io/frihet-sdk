@@ -47,6 +47,8 @@ import type {
   CreateStayComplianceParams,
   UpdateStayComplianceParams,
   StayComplianceListParams,
+  StayGuest,
+  StayGuestListParams,
   Page,
   RequestOptions,
 } from '../types.js';
@@ -196,13 +198,13 @@ export class Stays {
   }
 
   /**
-   * @deprecated The Frihet backend does not provide this capability (no such
-   * route exists); it fails locally with CapabilityUnavailableError before
-   * any HTTP request.
+   * Retrieve a single Stay property. LIVE runtime route: GET /properties/:id
+   * (read-only Stay compatibility route served by publicApi.ts).
    */
   retrieveProperty(id: string, opts?: RequestOptions): Promise<StayProperty> {
-    void id; void opts;
-    return unavailable<StayProperty>('retrieveProperty');
+    const entry = liveEntry('retrieveProperty');
+    if (entry instanceof Promise) return entry;
+    return this._client.get(`/properties/${enc(id)}`, undefined, opts);
   }
 
   /**
@@ -233,6 +235,31 @@ export class Stays {
   deleteProperty(id: string, opts?: RequestOptions): Promise<void> {
     void id; void opts;
     return unavailable<void>('deleteProperty');
+  }
+
+  // ---- Guests (compliance records — LIVE read-only routes GET /v1/guests[/:id]) ----
+
+  /**
+   * List Stay guest compliance records. LIVE runtime route: GET /guests.
+   * Supported filters: q, limit, offset, cursor, fields (allowlisted per the
+   * runtime-truth manifest). Any other defined param fails locally with
+   * CapabilityUnavailableError before any HTTP request.
+   */
+  listGuests(params?: StayGuestListParams, opts?: RequestOptions): Promise<Page<StayGuest>> {
+    const entry = liveEntry('listGuests');
+    if (entry instanceof Promise) return entry;
+    const { query, unsupported } = partitionQuery(entry, (params ?? {}) as Record<string, unknown>);
+    if (unsupported.length > 0) {
+      return Promise.reject(unsupportedParams('listGuests', unsupported));
+    }
+    return this._client.getPage('/guests', query, opts);
+  }
+
+  /** Retrieve a single Stay guest compliance record. LIVE runtime route: GET /guests/:id. */
+  retrieveGuest(id: string, opts?: RequestOptions): Promise<StayGuest> {
+    const entry = liveEntry('retrieveGuest');
+    if (entry instanceof Promise) return entry;
+    return this._client.get(`/guests/${enc(id)}`, undefined, opts);
   }
 
   // ---- Reservations ----

@@ -347,6 +347,7 @@ export class HttpClient {
         total: obj.total as number,
         limit: obj.limit as number,
         offset: obj.offset as number,
+        ...(typeof obj.hasMore === 'boolean' ? { hasMore: obj.hasMore } : {}),
         ...(obj.nextCursor ? { nextCursor: obj.nextCursor as string } : {}),
       };
     }

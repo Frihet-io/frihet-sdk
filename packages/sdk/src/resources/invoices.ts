@@ -3,6 +3,9 @@ import type {
   Invoice, CreateInvoiceParams, UpdateInvoiceParams, InvoiceListParams,
   SendInvoiceParams, MarkPaidResult, SendResult, Page, BatchResult, RequestOptions,
   CreateCreditNoteParams, CreditNoteResult, LateFeeParams, LateFeeResult,
+  EInvoiceExportParams, EInvoiceExportResult,
+  FaceSubmitParams, FaceSubmitResult, FaceStatusResult,
+  TicketBaiSubmitParams, TicketBaiSubmitResult, TicketBaiStatusResult,
 } from '../types.js';
 
 const enc = encodeURIComponent;
@@ -44,6 +47,61 @@ export class Invoices {
 
   pdf(id: string, opts?: RequestOptions): Promise<ArrayBuffer> {
     return this._client.getRaw(`/invoices/${enc(id)}/pdf`, opts);
+  }
+
+  /**
+   * Download the stored e-invoice artifact (`GET /v1/invoices/:id/xml`).
+   * Returns raw bytes (`application/xml` for Facturae/UBL/CII or
+   * `application/pdf` for Factur-X PDF/A-3). Throws 404 when no artifact has
+   * been generated yet.
+   */
+  xml(id: string, opts?: RequestOptions): Promise<ArrayBuffer> {
+    return this._client.getRaw(`/invoices/${enc(id)}/xml`, opts);
+  }
+
+  /**
+   * Generate and return an e-invoice XML in one of the 9 supported EN 16931
+   * formats (`POST /v1/invoices/:id/einvoice/export`).
+   * Requires `einvoice:*` scope plus `write` or `einvoice:write`.
+   */
+  exportEInvoice(id: string, params: EInvoiceExportParams, opts?: RequestOptions): Promise<EInvoiceExportResult> {
+    return this._client.post(`/invoices/${enc(id)}/einvoice/export`, params, opts);
+  }
+
+  /**
+   * Submit a signed Facturae XML to Spain's FACe B2G portal
+   * (`POST /v1/invoices/:id/face/submit`).
+   * Idempotent: returns the prior accepted registration with `idempotent: true`
+   * if already registered. Requires `einvoice:*` plus `write` or `einvoice:write`.
+   */
+  submitFace(id: string, params?: FaceSubmitParams, opts?: RequestOptions): Promise<FaceSubmitResult> {
+    return this._client.post(`/invoices/${enc(id)}/face/submit`, params, opts);
+  }
+
+  /**
+   * Query the current FACe tramitación status for a submitted invoice
+   * (`GET /v1/invoices/:id/face/status`). Requires `einvoice:*` scope.
+   */
+  faceStatus(id: string, opts?: RequestOptions): Promise<FaceStatusResult> {
+    return this._client.get(`/invoices/${enc(id)}/face/status`, undefined, opts);
+  }
+
+  /**
+   * Build, sign, and run the TicketBAI submission pipeline for an invoice
+   * (`POST /v1/invoices/:id/ticketbai/submit`).
+   * Idempotent: returns the prior accepted result with `idempotent: true` if
+   * already accepted. Requires `einvoice:*` plus `write` or `einvoice:write`.
+   */
+  submitTicketBai(id: string, params?: TicketBaiSubmitParams, opts?: RequestOptions): Promise<TicketBaiSubmitResult> {
+    return this._client.post(`/invoices/${enc(id)}/ticketbai/submit`, params, opts);
+  }
+
+  /**
+   * Read the stored TicketBAI submission status for an invoice
+   * (`GET /v1/invoices/:id/ticketbai/status`). Requires `einvoice:*` scope.
+   */
+  ticketBaiStatus(id: string, opts?: RequestOptions): Promise<TicketBaiStatusResult> {
+    return this._client.get(`/invoices/${enc(id)}/ticketbai/status`, undefined, opts);
   }
 
   /**

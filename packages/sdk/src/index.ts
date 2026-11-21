@@ -12,6 +12,9 @@ import { Deposits } from './resources/deposits.js';
 import { Team } from './resources/team.js';
 import { Gestoria } from './resources/gestoria.js';
 import { Channels } from './resources/channels.js';
+import { Fiscal } from './resources/fiscal.js';
+import { Search } from './resources/search.js';
+import { Banking } from './resources/banking.js';
 import type { FrihetOptions } from './types.js';
 
 export class Frihet {
@@ -33,6 +36,12 @@ export class Frihet {
   readonly gestoria: Gestoria;
   /** Stay distribution channel feeds (iCal / API OTA bindings) + sync. */
   readonly channels: Channels;
+  /** Fiscal compliance status endpoints (VeriFactu, etc.). */
+  readonly fiscal: Fiscal;
+  /** Workspace-scoped global search across invoices, expenses, vendors, clients, products. */
+  readonly search: Search;
+  /** Connected bank accounts, transactions, categorization, matching, and reconciliation suggestions. */
+  readonly banking: Banking;
 
   constructor(opts: FrihetOptions) {
     const client = new HttpClient(opts);
@@ -49,6 +58,9 @@ export class Frihet {
     this.team = new Team(client);
     this.gestoria = new Gestoria(client);
     this.channels = new Channels(client);
+    this.fiscal = new Fiscal(client);
+    this.search = new Search(client);
+    this.banking = new Banking(client);
   }
 }
 
@@ -68,6 +80,9 @@ export { Deposits } from './resources/deposits.js';
 export { Team } from './resources/team.js';
 export { Gestoria } from './resources/gestoria.js';
 export { Channels } from './resources/channels.js';
+export { Fiscal } from './resources/fiscal.js';
+export { Search } from './resources/search.js';
+export { Banking } from './resources/banking.js';
 export { FrihetError, APIError, AuthenticationError, NotFoundError, ValidationError, ConflictError, TeamSeatLimitError, RateLimitError, TimeoutError, CapabilityUnavailableError } from './error.js';
 export type * from './types.js';
 
@@ -89,7 +104,21 @@ export type {
 } from './types/hr.js';
 
 export type {
+  BankCounterparty,
+  BankTransactionStatus,
+  BankMatchedReference,
+  BankAccount,
+  BankAccountListParams,
   BankTransaction,
+  BankTransactionListParams,
+  CreateBankTransactionParams,
+  CategorizeBankTransactionParams,
+  MatchBankTransactionParams,
+  ReconciliationSuggestionSignal,
+  ReconciliationSuggestionBreakdown,
+  ReconciliationSuggestion,
+  BankTransactionSuggestionsParams,
+  BankTransactionSuggestionsResult,
   BankExceptionStatus,
   BankException,
   BankRuleConditionField,

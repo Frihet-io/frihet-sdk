@@ -35,11 +35,13 @@ Omit `status` and the API creates the record as a **draft** (`POST /v1/invoices`
 |------|-----|
 | `frihet.invoices.send`, `frihet.quotes.send` | Emails a third party |
 | `frihet.invoices.markPaid` | Asserts money arrived |
+| `frihet.invoices.submitFace`, `frihet.invoices.submitTicketBai` | Submits fiscal documents to external tax/B2G portals |
 | `frihet.deposits.apply`, `frihet.deposits.refund` | Moves money |
+| `frihet.banking.matchTransaction` | Links a bank transaction to a fiscal document |
 | `frihet.webhooks.create`, `frihet.webhooks.update`, `frihet.webhooks.del` | Changes what Frihet delivers to other systems |
 | `frihet.team.invite` | Invites a person |
 
-The SDK deliberately exposes **no** e-invoicing, VeriFactu, TicketBAI or FACe method. Those submissions are reachable only through the REST API and the MCP server, both of which gate them behind an explicit confirmation. Do not add a convenience wrapper for them here.
+Read-only fiscal status and XML export helpers (`frihet.invoices.xml`, `frihet.invoices.exportEInvoice`, `frihet.invoices.faceStatus`, `frihet.invoices.ticketBaiStatus`, `frihet.fiscal.verifactuStatus`) never submit to a tax authority. Any fiscal submission (`frihet.invoices.submitFace`, `frihet.invoices.submitTicketBai`) requires explicit human confirmation and an API key with `einvoice:write` (or `einvoice:*` + `write`).
 
 **Failure handling.** Errors are typed — `AuthenticationError` (401), `ValidationError` (400), `NotFoundError` (404), `RateLimitError` (429, `err.retryAfter` seconds), `ConflictError` (409). 429 and 5xx are retried up to 3 times automatically with a shared `Idempotency-Key`; do not add your own retry loop on top. After a 409 on a POST, read the resource back rather than retrying with a fresh key — a new key would create a second fiscal document.
 

@@ -28,6 +28,12 @@ jobs:
       - run: pnpm build
       - run: pnpm typecheck
 
+      # The resolver that decides WHICH release publish-drift.yml re-proves. Pure Node,
+      # no dependencies, so it runs with the repo toolchain rather than a package suite.
+      - name: Release-pin resolver suite
+        if: matrix.node != 18
+        run: pnpm test:scripts
+
       # vitest 4 requires Node 20+, so the full suite runs on 20/22 and the
       # built bundle is smoke-tested on the oldest supported Node instead.
       - name: SDK test suite

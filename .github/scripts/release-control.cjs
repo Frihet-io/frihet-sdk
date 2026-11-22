@@ -697,7 +697,7 @@ function finalizePins() {
 	const note = `release(sdk): ${VERSION} to npm — verified ${today}: rebuild matches both published tarballs byte-for-byte`;
 
 	const existingIndex = pins.pins.findIndex((pin) => pin.packages?.['@frihet/sdk'] === VERSION && pin.packages?.['frihet'] === VERSION);
-	const entry = { commit: sha, note, packages: { '@frihet/sdk': VERSION, frihet: VERSION } };
+	const entry = { commit: sha, status: 'verified', verifiedAt: today, note, packages: { '@frihet/sdk': VERSION, frihet: VERSION } };
 	if (existingIndex >= 0) {
 		pins.pins[existingIndex] = entry;
 	} else {

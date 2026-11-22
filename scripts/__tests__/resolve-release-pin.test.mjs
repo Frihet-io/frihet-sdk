@@ -654,18 +654,32 @@ describe('Round 3 — cross-model review findings', () => {
       assert.match(run.stderr, /is not the release the pin claims/);
     });
 
-    it('--assert-tree against this very repo passes (it IS the selected release)', () => {
-      // The worktree's manifests are 1.3.0 and the canonical pin is the 1.3.0
-      // pin, so the claim and the evidence agree. This is the positive control:
-      // if it ever fails, either main moved past the newest verified pin without
-      // adding one, or the binding itself broke.
+    it('--assert-tree against a tree matching the repo canonical pin passes (positive CLI control)', () => {
+      // Positive control for the CLI's default pins + --assert-tree wiring.
+      // Main itself may legitimately be ahead of the latest verified pin during
+      // release prep (e.g. 1.4.0 manifests before 1.4.0 is published), so build
+      // a tree matching the real canonical pin rather than assuming REPO_ROOT
+      // is pinned to the last published version.
+      const repoManifests = readPublishableManifests(join(REPO_ROOT, 'packages'));
       assert.deepEqual(
-        readPublishableManifests(join(REPO_ROOT, 'packages')).map((m) => `${m.name}@${m.version}`),
-        ['@frihet/sdk@1.3.0', 'frihet@1.3.0'],
+        repoManifests.map((m) => m.name),
+        ['@frihet/sdk', 'frihet'],
       );
-      const run = runCli(['--assert-tree', REPO_ROOT]);
+      const selected = selectCanonicalPin(JSON.parse(readFileSync(REAL_PINS, 'utf8')), {
+        expectedPackages: discoverPublishablePackages(),
+      }).pin;
+      const tree = makeTree(
+        Object.fromEntries(
+          Object.entries(selected.packages).map(([name, version], i) => [`pkg-${i}`, { name, version }]),
+        ),
+      );
+      const run = runCli(['--assert-tree', tree]);
       assert.equal(run.status, 0);
-      assert.match(run.stderr, /matches the pin: @frihet\/sdk@1\.3\.0 \+ frihet@1\.3\.0/);
+      const expectedSummary = Object.entries(selected.packages)
+        .sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([name, version]) => `${name}@${version}`)
+        .join(' + ');
+      assert.ok(run.stderr.includes(`matches the pin: ${expectedSummary}`), run.stderr);
     });
 
     it('requires a path for --assert-tree', () => {

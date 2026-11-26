@@ -2,6 +2,23 @@
 
 All notable changes to `frihet` (CLI) will be documented in this file.
 
+## 1.4.0 - 2026-XX-XX (release-candidate)
+
+**Wave-2 CLI parity & SDK contract alignment.** Aligns `frihet` with
+`@frihet/sdk@1.4.0` (verified by `cross-surface-contract.test.ts` and
+`wave2-commands.test.ts`).
+
+### Added
+
+- **New Wave-2 command groups** (`src/index.ts`):
+  - `frihet banking` (`src/commands/banking.ts`) — bank accounts, transactions, categorization, and invoice matching.
+  - `frihet fiscal` (`src/commands/fiscal.ts`) — Spanish Modelo 303/130/390/180/347 summaries and VeriFactu status.
+  - `frihet search` (`src/commands/search.ts`) — cross-entity workspace search.
+
+### Changed
+
+- Depends on `@frihet/sdk@1.4.0` (cross-surface contract truth alignment for team roles, mandatory webhook `name`, batch `meta`, and `Channels.sync`).
+
 ## 1.3.0 - 2026-08-30
 
 **This is the first release of `frihet` (CLI) since 1.2.0 (2026-06-20).**
